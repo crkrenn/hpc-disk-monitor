@@ -1,0 +1,4 @@
+# Example .env file for HPC Disk Monitor
+FILESYSTEM_PATHS={{HOME}},/p/lustre1/{{whoami}},/p/lustre1/{{whoami}},/usr/workspace/{{whoami}}
+FILESYSTEM_LABELS=home,lustre1,lustre2,workspace
+DISK_STATS_DB=/p/lustre1/{{whoami}}/hpc-disk-monitor/data/disk_stats.db

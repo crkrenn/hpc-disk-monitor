@@ -1,0 +1,13 @@
+# Python artifacts
+__pycache__/
+*.pyc
+
+# Local config
+config/.env
+
+# SQLite database
+data/*.db
+*.log
+venv*
+.env
+exports
