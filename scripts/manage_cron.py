@@ -15,6 +15,7 @@ preprocess_env(use_shell_env=True)
 SCRIPT_PATH = Path(__file__).resolve().parent.parent / "scripts" / "disk_metrics_collector.py"
 PYTHON_EXEC = Path(sys.executable)
 CRON_COMMENT = "# hpc-disk-monitor collector"
+CRON_SCHEDULE = "*/5 * * * *"  # Run every 5 minutes
 
 # Prepare environment variables inline for crontab (flattened)
 ENV_EXPORTS = [
@@ -23,7 +24,7 @@ ENV_EXPORTS = [
     f"FILESYSTEM_LABELS={os.environ.get('FILESYSTEM_LABELS')}"
 ]
 
-CRON_CMD = f"{' '.join(ENV_EXPORTS)} {PYTHON_EXEC} {SCRIPT_PATH} {CRON_COMMENT}"
+CRON_CMD = f"{CRON_SCHEDULE} {' '.join(ENV_EXPORTS)} {PYTHON_EXEC} {SCRIPT_PATH} {CRON_COMMENT}"
 
 def get_crontab():
     result = subprocess.run(["crontab", "-l"], capture_output=True, text=True)
@@ -33,8 +34,10 @@ def get_crontab():
 
 def pretty_print_cron(cmd):
     parts = cmd.split()
-    env_parts = [p for p in parts if '=' in p and not p.endswith(CRON_COMMENT)]
+    env_parts = [p for p in parts if '=' in p and not p.startswith('*/') and not p.endswith(CRON_COMMENT)]
     command = ' '.join([p for p in parts if '=' not in p or p.endswith(CRON_COMMENT)])
+    schedule = ' '.join(parts[:5])
+    print(f"Schedule: {schedule}")
     print("Environment:")
     for p in env_parts:
         print(f"  {p}")
