@@ -3,7 +3,8 @@ import os
 import time
 import statistics
 import sqlite3
-from datetime import datetime
+import argparse
+from datetime import datetime, timedelta
 from collections import deque
 from pathlib import Path
 
@@ -15,7 +16,13 @@ from pathlib import Path
 sys.path.append(str(Path(__file__).resolve().parent.parent))
 
 from common.env_utils import preprocess_env
+from db.schema import connect_db, create_tables
 preprocess_env()
+
+# Parse command line arguments
+parser = argparse.ArgumentParser(description='Collect disk I/O metrics')
+parser.add_argument('--verbose', action='store_true', help='Enable verbose output')
+args = parser.parse_args()
 
 
 # Parse filesystem config
@@ -26,18 +33,16 @@ if len(fs_paths) != len(fs_labels):
     raise ValueError("FILESYSTEM_PATHS and FILESYSTEM_LABELS must have the same length")
 
 FILESYSTEM_CONFIG = dict(zip(fs_paths, fs_labels))
-DB_FILE = os.getenv("DISK_STATS_DB", "/mnt/data/disk_stats.db")
+
+# Use DB_FILE from schema module
+from db.schema import DB_FILE
 
 # Parameters
 DURATION = 3  # seconds per test cycle
 CHUNK_SIZE = 4 * 1024  # 4 KB
 ROLLING_WINDOW_MINUTES = 60
 
-# Rolling stats store
-rolling_stats = {
-    label: deque(maxlen=ROLLING_WINDOW_MINUTES)
-    for label in FILESYSTEM_CONFIG.values()
-}
+# We no longer need rolling_stats as we'll query the database directly
 
 def current_timestamp():
     return datetime.now().strftime("%Y-%m-%d %H:%M")
@@ -89,35 +94,26 @@ def test_io_speed(directory, mode='write'):
     }
 
 def init_db():
-    with sqlite3.connect(DB_FILE) as conn:
-        c = conn.cursor()
-        c.execute('''
-            CREATE TABLE IF NOT EXISTS disk_stats (
-                timestamp TEXT,
-                label TEXT,
-                write_mbps REAL,
-                write_iops REAL,
-                write_lat_avg REAL,
-                read_mbps REAL,
-                read_iops REAL,
-                read_lat_avg REAL
-            )
-        ''')
-        c.execute('''
-            CREATE TABLE IF NOT EXISTS disk_stats_summary (
-                timestamp TEXT,
-                label TEXT,
-                metric TEXT,
-                avg REAL,
-                min REAL,
-                max REAL,
-                stddev REAL
-            )
-        ''')
-        conn.commit()
+    conn = connect_db()
+    create_tables(conn)
+    
+    if args.verbose:
+        # Show table schemas
+        with conn:
+            c = conn.cursor()
+            c.execute("SELECT name FROM sqlite_master WHERE type='table'")
+            tables = c.fetchall()
+            for table in tables:
+                table_name = table[0]
+                print(f"Table: {table_name}")
+                c.execute(f"PRAGMA table_info({table_name})")
+                columns = c.fetchall()
+                for col in columns:
+                    print(f"  {col[1]} ({col[2]})")
 
 def insert_stat_record(record):
-    with sqlite3.connect(DB_FILE) as conn:
+    conn = connect_db()
+    with conn:
         c = conn.cursor()
         c.execute('''
             INSERT INTO disk_stats (
@@ -130,11 +126,11 @@ def insert_stat_record(record):
             record["write_mbps"], record["write_iops"], record["write_lat_avg"],
             record["read_mbps"], record["read_iops"], record["read_lat_avg"]
         ))
-        conn.commit()
 
 def insert_summary_stats(label, summary):
     timestamp = current_timestamp()
-    with sqlite3.connect(DB_FILE) as conn:
+    conn = connect_db()
+    with conn:
         c = conn.cursor()
         for metric, stats in summary.items():
             c.execute('''
@@ -143,29 +139,58 @@ def insert_summary_stats(label, summary):
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             ''', (timestamp, HOSTNAME, label, metric,
                   stats["avg"], stats["min"], stats["max"], stats["stddev"]))
-        conn.commit()
 
 def compute_and_store_summary(label):
-    window = rolling_stats[label]
-    if not window:
+    """Calculate summary statistics from the last hour of data in the database"""
+    conn = connect_db()
+    one_hour_ago = datetime.now() - timedelta(hours=1)
+    ts_threshold = one_hour_ago.strftime("%Y-%m-%d %H:%M")
+    
+    if args.verbose:
+        print(f"Computing summary statistics for {label} since {ts_threshold}...")
+    
+    with conn:
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT write_mbps, write_iops, write_lat_avg,
+                   read_mbps, read_iops, read_lat_avg
+            FROM disk_stats
+            WHERE label = ? AND hostname = ? AND timestamp >= ?
+        """, (label, HOSTNAME, ts_threshold))
+        rows = cursor.fetchall()
+    
+    if not rows:
+        if args.verbose:
+            print(f"No data found for {label} in the last hour")
         return
-
+    
+    # Transpose rows to get columns
+    metrics = list(zip(*rows))
+    metric_names = [
+        "write_mbps", "write_iops", "write_lat_avg",
+        "read_mbps", "read_iops", "read_lat_avg"
+    ]
+    
     summary = {}
-    for key in ["write_mbps", "write_iops", "write_lat_avg",
-                "read_mbps", "read_iops", "read_lat_avg"]:
-        values = [entry[key] for entry in window]
+    for i, name in enumerate(metric_names):
+        values = metrics[i]
         if values:
-            summary[key] = {
+            summary[name] = {
                 "min": min(values),
                 "max": max(values),
                 "avg": sum(values) / len(values),
                 "stddev": statistics.stdev(values) if len(values) > 1 else 0
             }
+            
+    if args.verbose:
+        print(f"Found {len(rows)} data points for {label} in the last hour")
+            
     insert_summary_stats(label, summary)
 
 def decimate_old_data():
     """ Retain all points from the last 1 day, decimate older ones """
-    with sqlite3.connect(DB_FILE) as conn:
+    conn = connect_db()
+    with conn:
         c = conn.cursor()
         c.execute('''
             DELETE FROM disk_stats
@@ -178,19 +203,25 @@ def decimate_old_data():
               AND timestamp >= datetime('now', '-3 days')
               AND rowid % 6 != 0
         ''')
-        conn.commit()
 
 def run_once_and_record():
     timestamp = current_timestamp()
     for path, label in FILESYSTEM_CONFIG.items():
+        if args.verbose:
+            print(f"Testing {label} ({path})...")
+        
         write = test_io_speed(path, 'write')
         read = test_io_speed(path, 'read')
         try:
             os.remove(os.path.join(path, "test_speed.tmp"))
         except:
             pass
+        
         if 'error' in write or 'error' in read:
+            if args.verbose:
+                print(f"Error testing {label}: {write.get('error', '')} {read.get('error', '')}")
             continue
+            
         entry = {
             "timestamp": timestamp,
             "label": label,
@@ -201,11 +232,31 @@ def run_once_and_record():
             "read_iops": read["iops"],
             "read_lat_avg": read["latency"]["avg"]
         }
-        rolling_stats[label].append(entry)
+        
+        if args.verbose:
+            print(f"{label} results:")
+            print(f"  Write: {write['mbps']:.2f} MB/s, {write['iops']:.2f} IOPS, {write['latency']['avg']*1000:.2f} ms avg latency")
+            print(f"  Read:  {read['mbps']:.2f} MB/s, {read['iops']:.2f} IOPS, {read['latency']['avg']*1000:.2f} ms avg latency")
+        
         insert_stat_record(entry)
         compute_and_store_summary(label)
+    
+    if args.verbose:
+        print("Decimating old data...")
     decimate_old_data()
+    if args.verbose:
+        print("Done.")
 
-# Initialize and run
-init_db()
-run_once_and_record()
+def main():
+    """Main entry point for the script."""
+    if args.verbose:
+        print(f"Initializing DB at {DB_FILE}...")
+    init_db()
+    if args.verbose:
+        print(f"Starting disk metrics collection for: {', '.join(FILESYSTEM_CONFIG.values())}")
+    run_once_and_record()
+    return 0
+
+# Only run if executed directly
+if __name__ == "__main__":
+    main()
