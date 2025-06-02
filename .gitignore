@@ -11,3 +11,5 @@ data/*.db
 venv*
 .env
 exports
+# SpecStory explanation file
+.specstory/.what-is-this.md
