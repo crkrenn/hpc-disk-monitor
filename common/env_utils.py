@@ -4,8 +4,12 @@ import socket
 from pathlib import Path
 from dotenv import dotenv_values
 
+
 def preprocess_env(path=".env", use_shell_env=False):
-    """Load .env file and replace {{whoami}}, {{HOME}}, {{hostname}} if not set in shell."""
+    """
+    Load .env file and replace {{whoami}}, {{HOME}}, {{hostname}}
+    if not set in shell.
+    """
     username = getpass.getuser()
     home_dir = str(Path.home())
     hostname = socket.gethostname()
@@ -18,8 +22,7 @@ def preprocess_env(path=".env", use_shell_env=False):
             continue  # keep existing shell value
         if value is not None:
             processed = (
-                value
-                .replace("{{whoami}}", username)
+                value.replace("{{whoami}}", username)
                 .replace("{{HOME}}", home_dir)
                 .replace("{{hostname}}", hostname)
             )
