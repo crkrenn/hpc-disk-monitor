@@ -32,7 +32,7 @@ def get_latest_summary_per_filesystem(conn):
     # Create label filter if filesystem labels are configured
     if FS_LABELS:
         placeholders = ', '.join(['?'] * len(FS_LABELS))
-        label_filter = f"AND s.label IN ({placeholders})"
+        label_filter = f"AND label IN ({placeholders})"
         params = FS_LABELS
     else:
         label_filter = ""
