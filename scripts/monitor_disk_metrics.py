@@ -25,6 +25,9 @@ preprocess_env()
 DASH_REFRESH_SECONDS = int(os.getenv("DASH_REFRESH_SECONDS", "5"))
 DISK_SAMPLING_MINUTES = int(os.getenv("DISK_SAMPLING_MINUTES", "5"))
 
+# Get filesystem configuration from environment
+FS_LABELS = os.getenv("FILESYSTEM_LABELS", "tmpfs").split(",")
+
 # Time range options for display
 TIME_RANGES = {
     "1d": {"label": "Last 24 Hours", "days": 1},
@@ -67,22 +70,41 @@ def fetch_summary_data(time_range_days=None):
                 print("Warning: No data found in disk_stats_summary table")
                 return pd.DataFrame(columns=["timestamp", "hostname", "label", "metric", "avg", "min", "max", "stddev"])
             
+            # Generate placeholder for filesystem labels if any are configured
+            if FS_LABELS:
+                labels_for_query = ", ".join(f"'{label}'" for label in FS_LABELS)
+                labels_clause = f"AND label IN ({labels_for_query})"
+            else:
+                # If no labels specified, get all data
+                labels_clause = ""
+            
             # If table exists and has data, fetch it with optional time filter
             if time_range_days is not None:
-                # Apply time filter
-                query = """
+                # Apply time filter and label filter
+                query = f"""
                     SELECT * FROM disk_stats_summary 
                     WHERE timestamp >= datetime('now', ?) 
+                    {labels_clause}
                     ORDER BY timestamp
                 """
                 days_param = f"-{time_range_days} days"
                 df = pd.read_sql_query(query, conn, params=(days_param,))
             else:
-                # Get all data
-                df = pd.read_sql_query("SELECT * FROM disk_stats_summary ORDER BY timestamp", conn)
+                # Get all data with label filter
+                query = f"""
+                    SELECT * FROM disk_stats_summary 
+                    WHERE 1=1 
+                    {labels_clause}
+                    ORDER BY timestamp
+                """
+                df = pd.read_sql_query(query, conn)
             
         if not df.empty:
             df["timestamp"] = pd.to_datetime(df["timestamp"])
+            
+        if df.empty and FS_LABELS:
+            print(f"Warning: No data found for configured filesystems: {', '.join(FS_LABELS)}")
+            
         return df
         
     except (sqlite3.Error, FileNotFoundError) as e:
@@ -156,9 +178,14 @@ def build_graph(df, metric, show_min, show_max, show_std, height=300):
                 "stddev": f"{metric}_std"
             })
     
-        # Plot data for each label
-        labels = df["label"].unique()
-        for label in labels:
+        # Plot data only for configured filesystems
+        all_labels = df["label"].unique()
+        configured_labels = [label for label in all_labels if label in FS_LABELS]
+        
+        # If no configured labels are found, fall back to all labels
+        labels_to_plot = configured_labels if configured_labels else all_labels
+        
+        for label in labels_to_plot:
             label_df = df[df["label"] == label]
 
             fig.add_trace(
@@ -313,6 +340,11 @@ app.layout = html.Div(
                 html.Div([
                     html.Span("Dashboard refreshes every: ", style={'font-weight': 'bold'}),
                     html.Span(f"{DASH_REFRESH_SECONDS} seconds", style={'color': '#16a085'})
+                ], style={'margin-right': '20px'}),
+                
+                html.Div([
+                    html.Span("Monitoring filesystems: ", style={'font-weight': 'bold'}),
+                    html.Span(", ".join(FS_LABELS), style={'color': '#16a085'})
                 ])
             ],
             style={'display': 'flex', 'justify-content': 'center', 'margin-bottom': '20px', 'font-size': '14px'}
