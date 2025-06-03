@@ -1,4 +1,14 @@
 # Example .env file for HPC Disk Monitor
+
+# Filesystem configuration
 FILESYSTEM_PATHS={{HOME}},/p/lustre1/{{whoami}},/p/lustre1/{{whoami}},/usr/workspace/{{whoami}}
 FILESYSTEM_LABELS=home,lustre1,lustre2,workspace
+
+# Database location
 DISK_STATS_DB=/p/lustre1/{{whoami}}/hpc-disk-monitor/data/disk_stats.db
+
+# Data collection frequency (minutes)
+DISK_SAMPLING_MINUTES=5
+
+# Dashboard refresh rate (seconds)
+DASH_REFRESH_SECONDS=5

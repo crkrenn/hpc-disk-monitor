@@ -26,8 +26,11 @@ PLIST_LABEL = (
 LAUNCH_AGENTS_DIR = Path.home() / "Library" / "LaunchAgents"
 PLIST_PATH = LAUNCH_AGENTS_DIR / f"{PLIST_LABEL}.plist"
 
-# Run every 5 minutes
-CRON_SCHEDULE = "*/5 * * * *"
+# Sampling frequency from env (default 5 minutes)
+DISK_SAMPLING_MINUTES = int(os.environ.get("DISK_SAMPLING_MINUTES", "5"))
+
+# Cron schedule (every X minutes)
+CRON_SCHEDULE = f"*/{DISK_SAMPLING_MINUTES} * * * *"
 
 # Inline environment variables (flattened) for both cron and launchd
 ENV_EXPORTS = {
@@ -139,8 +142,8 @@ def _make_launchd_plist_dict() -> dict:
     plist = {
         "Label": PLIST_LABEL,
         "ProgramArguments": program_args,
-        # Run every 5 minutes:
-        "StartInterval": 300,
+        # Run at specified interval (in seconds)
+        "StartInterval": DISK_SAMPLING_MINUTES * 60,  # Convert minutes to seconds
         # Load at login (optional if you want it always active when user logs in)
         "RunAtLoad": True,
         "EnvironmentVariables": env_dict,
