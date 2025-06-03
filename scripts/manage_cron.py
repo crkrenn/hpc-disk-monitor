@@ -34,9 +34,16 @@ CRON_SCHEDULE = f"*/{DISK_SAMPLING_MINUTES} * * * *"
 
 # Inline environment variables (flattened) for both cron and launchd
 ENV_EXPORTS = {
-    "DISK_STATS_DB": os.environ.get("DISK_STATS_DB", ""),
+    # Filesystem configuration
     "FILESYSTEM_PATHS": os.environ.get("FILESYSTEM_PATHS", ""),
     "FILESYSTEM_LABELS": os.environ.get("FILESYSTEM_LABELS", ""),
+    
+    # Database location
+    "DISK_STATS_DB": os.environ.get("DISK_STATS_DB", ""),
+    
+    # Data collection and display settings
+    "DISK_SAMPLING_MINUTES": os.environ.get("DISK_SAMPLING_MINUTES", "5"),
+    "DASH_REFRESH_SECONDS": os.environ.get("DASH_REFRESH_SECONDS", "5"),
 }
 
 
