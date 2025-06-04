@@ -13,24 +13,32 @@ from common.env_utils import preprocess_env
 preprocess_env()
 
 # Paths
-SCRIPT_PATH = (
+COLLECTOR_SCRIPT_PATH = (
     Path(__file__).resolve().parent.parent / "scripts" / "disk_metrics_collector.py"
+)
+SUMMARY_SCRIPT_PATH = (
+    Path(__file__).resolve().parent.parent / "scripts" / "db_summary.py"
 )
 PYTHON_EXEC = Path(sys.executable)
 
-# Comment/Label used to identify the job
-CRON_COMMENT = "# hpc-disk-monitor collector"
-PLIST_LABEL = (
-    "com.hpc.diskmonitor"  # must match the filename (com.hpc.diskmonitor.plist)
-)
+# Comment/Label used to identify the jobs
+COLLECTOR_CRON_COMMENT = "# hpc-disk-monitor collector"
+SUMMARY_CRON_COMMENT = "# hpc-disk-monitor summary"
+
+# LaunchAgent identifiers
+COLLECTOR_PLIST_LABEL = "com.hpc.diskmonitor"  # must match the filename
+SUMMARY_PLIST_LABEL = "com.hpc.diskmonitor.summary"
 LAUNCH_AGENTS_DIR = Path.home() / "Library" / "LaunchAgents"
-PLIST_PATH = LAUNCH_AGENTS_DIR / f"{PLIST_LABEL}.plist"
+COLLECTOR_PLIST_PATH = LAUNCH_AGENTS_DIR / f"{COLLECTOR_PLIST_LABEL}.plist"
+SUMMARY_PLIST_PATH = LAUNCH_AGENTS_DIR / f"{SUMMARY_PLIST_LABEL}.plist"
 
-# Sampling frequency from env (default 5 minutes)
+# Schedule configuration from env
 DISK_SAMPLING_MINUTES = int(os.environ.get("DISK_SAMPLING_MINUTES", "5"))
+SUMMARY_INTERVAL_HOURS = 24  # Run summary every 24 hours
 
-# Cron schedule (every X minutes)
-CRON_SCHEDULE = f"*/{DISK_SAMPLING_MINUTES} * * * *"
+# Cron schedules
+COLLECTOR_CRON_SCHEDULE = f"*/{DISK_SAMPLING_MINUTES} * * * *"  # Every X minutes
+SUMMARY_CRON_SCHEDULE = f"0 */24 * * *"  # Every 24 hours at minute 0
 
 # Inline environment variables (flattened) for both cron and launchd
 ENV_EXPORTS = {
@@ -62,58 +70,98 @@ def pretty_print_cron_entry(entry_line: str):
     parts = entry_line.split()
     schedule = " ".join(parts[:5])
     env_parts = [p for p in parts[5:] if "=" in p and not p.startswith("#")]
-    command = " ".join([p for p in parts[5:] if p not in env_parts])
+    
+    # Detect which comment is used in this entry
+    if SUMMARY_CRON_COMMENT in entry_line:
+        job_comment = SUMMARY_CRON_COMMENT
+    else:
+        job_comment = COLLECTOR_CRON_COMMENT
+        
+    # Extract command without environment variables and comment
+    command = " ".join([p for p in parts[5:] 
+                      if p not in env_parts 
+                      and job_comment not in p])
+    
     print(f"Schedule: {schedule}")
     if env_parts:
         print("Environment:")
         for p in env_parts:
             print(f"  {p}")
     print("Command:")
-    print(f"  {command} {CRON_COMMENT}")
+    print(f"  {command} {job_comment}")
 
 
 def install_cron_job():
     current = get_crontab_lines()
-    if any(CRON_COMMENT in line for line in current):
-        print("⚠️  Cron job already exists.")
+    collector_exists = any(COLLECTOR_CRON_COMMENT in line for line in current)
+    summary_exists = any(SUMMARY_CRON_COMMENT in line for line in current)
+    
+    if collector_exists and summary_exists:
+        print("⚠️  Both collector and summary cron jobs already exist.")
         return
 
     print("📋 Current crontab:")
     print("\n".join(current) or "(empty)")
-    print("\n--- Adding job ---\n")
+    print("\n--- Adding jobs ---\n")
 
-    # Build the single-line cron entry
+    new_crontab = current[:]
     env_str = " ".join(f"{k}={v}" for k, v in ENV_EXPORTS.items())
-    cron_entry = f"{CRON_SCHEDULE} {env_str} {PYTHON_EXEC} {SCRIPT_PATH} {CRON_COMMENT}"
-    pretty_print_cron_entry(cron_entry)
-
-    new_crontab = current + [cron_entry]
+    
+    # Add collector job if needed
+    if not collector_exists:
+        collector_entry = f"{COLLECTOR_CRON_SCHEDULE} {env_str} {PYTHON_EXEC} {COLLECTOR_SCRIPT_PATH} {COLLECTOR_CRON_COMMENT}"
+        print("Adding collector job:")
+        pretty_print_cron_entry(collector_entry)
+        new_crontab.append(collector_entry)
+    
+    # Add summary job if needed
+    if not summary_exists:
+        # Add --time-period 1d to generate daily summary
+        summary_entry = f"{SUMMARY_CRON_SCHEDULE} {env_str} {PYTHON_EXEC} {SUMMARY_SCRIPT_PATH} --time-period 1d --recompute {SUMMARY_CRON_COMMENT}"
+        print("\nAdding summary job:")
+        pretty_print_cron_entry(summary_entry)
+        new_crontab.append(summary_entry)
+    
     _confirm_and_apply_cron(new_crontab)
 
 
 def update_cron_job():
     current = get_crontab_lines()
-    filtered = [line for line in current if CRON_COMMENT not in line]
+    filtered = [line for line in current 
+                if COLLECTOR_CRON_COMMENT not in line 
+                and SUMMARY_CRON_COMMENT not in line]
 
     env_str = " ".join(f"{k}={v}" for k, v in ENV_EXPORTS.items())
-    cron_entry = f"{CRON_SCHEDULE} {env_str} {PYTHON_EXEC} {SCRIPT_PATH} {CRON_COMMENT}"
+    
+    # Create collector job entry
+    collector_entry = f"{COLLECTOR_CRON_SCHEDULE} {env_str} {PYTHON_EXEC} {COLLECTOR_SCRIPT_PATH} {COLLECTOR_CRON_COMMENT}"
+    
+    # Create summary job entry
+    summary_entry = f"{SUMMARY_CRON_SCHEDULE} {env_str} {PYTHON_EXEC} {SUMMARY_SCRIPT_PATH} --time-period 1d --recompute {SUMMARY_CRON_COMMENT}"
 
     print("📋 Current crontab:")
     print("\n".join(current) or "(empty)")
-    print("\n--- Updating job ---\n")
-    pretty_print_cron_entry(cron_entry)
+    print("\n--- Updating jobs ---\n")
+    
+    print("Updating collector job:")
+    pretty_print_cron_entry(collector_entry)
+    
+    print("\nUpdating summary job:")
+    pretty_print_cron_entry(summary_entry)
 
-    new_crontab = filtered + [cron_entry]
+    new_crontab = filtered + [collector_entry, summary_entry]
     _confirm_and_apply_cron(new_crontab)
 
 
 def remove_cron_job():
     current = get_crontab_lines()
-    new_crontab = [line for line in current if CRON_COMMENT not in line]
+    new_crontab = [line for line in current 
+                   if COLLECTOR_CRON_COMMENT not in line 
+                   and SUMMARY_CRON_COMMENT not in line]
 
     print("📋 Current crontab:")
     print("\n".join(current) or "(empty)")
-    print("\n--- Removing job ---\n")
+    print("\n--- Removing jobs ---\n")
     print("\n".join(new_crontab) or "(empty)")
     _confirm_and_apply_cron(new_crontab)
 
@@ -134,20 +182,20 @@ def _confirm_and_apply_cron(lines):
 # ──────────────── Helpers: macOS (launchd) ───────────────── #
 
 
-def _make_launchd_plist_dict() -> dict:
+def _make_collector_plist_dict() -> dict:
     """
-    Build a Python dict representing the plist content for launchd.
-    - Runs every 300 seconds (5 minutes) via StartInterval.
+    Build a Python dict representing the plist content for the collector LaunchAgent.
+    - Runs every X minutes via StartInterval.
     - Passes environment variables via 'EnvironmentVariables' key.
     """
     # Command plus arguments:
-    program_args = [str(PYTHON_EXEC), str(SCRIPT_PATH)]
+    program_args = [str(PYTHON_EXEC), str(COLLECTOR_SCRIPT_PATH)]
 
     # Only include environment variables that are non-empty:
     env_dict = {k: v for k, v in ENV_EXPORTS.items() if v}
 
     plist = {
-        "Label": PLIST_LABEL,
+        "Label": COLLECTOR_PLIST_LABEL,
         "ProgramArguments": program_args,
         # Run at specified interval (in seconds)
         "StartInterval": DISK_SAMPLING_MINUTES * 60,  # Convert minutes to seconds
@@ -156,10 +204,46 @@ def _make_launchd_plist_dict() -> dict:
         "EnvironmentVariables": env_dict,
         # Redirect stdout/stderr into ~/Library/Logs/com.hpc.diskmonitor.log
         "StandardOutPath": str(
-            Path.home() / "Library" / "Logs" / f"{PLIST_LABEL}.out.log"
+            Path.home() / "Library" / "Logs" / f"{COLLECTOR_PLIST_LABEL}.out.log"
         ),
         "StandardErrorPath": str(
-            Path.home() / "Library" / "Logs" / f"{PLIST_LABEL}.err.log"
+            Path.home() / "Library" / "Logs" / f"{COLLECTOR_PLIST_LABEL}.err.log"
+        ),
+    }
+    return plist
+
+def _make_summary_plist_dict() -> dict:
+    """
+    Build a Python dict representing the plist content for the summary LaunchAgent.
+    - Runs every 24 hours via StartInterval.
+    - Passes environment variables via 'EnvironmentVariables' key.
+    """
+    # Command plus arguments (including --time-period and --recompute):
+    program_args = [
+        str(PYTHON_EXEC), 
+        str(SUMMARY_SCRIPT_PATH),
+        "--time-period", 
+        "1d",
+        "--recompute"
+    ]
+
+    # Only include environment variables that are non-empty:
+    env_dict = {k: v for k, v in ENV_EXPORTS.items() if v}
+
+    plist = {
+        "Label": SUMMARY_PLIST_LABEL,
+        "ProgramArguments": program_args,
+        # Run every 24 hours (in seconds)
+        "StartInterval": SUMMARY_INTERVAL_HOURS * 3600,  # Convert hours to seconds
+        # Load at login (optional if you want it always active when user logs in)
+        "RunAtLoad": True,
+        "EnvironmentVariables": env_dict,
+        # Redirect stdout/stderr into ~/Library/Logs/com.hpc.diskmonitor.summary.log
+        "StandardOutPath": str(
+            Path.home() / "Library" / "Logs" / f"{SUMMARY_PLIST_LABEL}.out.log"
+        ),
+        "StandardErrorPath": str(
+            Path.home() / "Library" / "Logs" / f"{SUMMARY_PLIST_LABEL}.err.log"
         ),
     }
     return plist
@@ -167,62 +251,116 @@ def _make_launchd_plist_dict() -> dict:
 
 def install_launchd_job():
     LAUNCH_AGENTS_DIR.mkdir(parents=True, exist_ok=True)
-    if PLIST_PATH.exists():
-        print("⚠️  LaunchAgent plist already exists.")
+    
+    # Check if plists already exist
+    collector_exists = COLLECTOR_PLIST_PATH.exists()
+    summary_exists = SUMMARY_PLIST_PATH.exists()
+    
+    if collector_exists and summary_exists:
+        print("⚠️  Both LaunchAgent plists already exist.")
         return
 
-    plist_dict = _make_launchd_plist_dict()
-    print(f"📋 Will write LaunchAgent plist to:\n    {PLIST_PATH}\n")
-    print("Contents:")
-    print(plistlib.dumps(plist_dict).decode())
+    # Install collector if needed
+    if not collector_exists:
+        collector_plist = _make_collector_plist_dict()
+        print(f"📋 Will write Collector LaunchAgent plist to:\n    {COLLECTOR_PLIST_PATH}\n")
+        print("Contents:")
+        print(plistlib.dumps(collector_plist).decode())
+    
+    # Install summary if needed
+    if not summary_exists:
+        summary_plist = _make_summary_plist_dict()
+        print(f"📋 Will write Summary LaunchAgent plist to:\n    {SUMMARY_PLIST_PATH}\n")
+        print("Contents:")
+        print(plistlib.dumps(summary_plist).decode())
 
-    print("\nType 'yes' to write and load this LaunchAgent:")
+    print("\nType 'yes' to write and load these LaunchAgents:")
     if input().strip().lower() == "yes":
-        with open(PLIST_PATH, "wb") as f:
-            plistlib.dump(plist_dict, f)
-
-        # Load it into launchd
-        subprocess.run(["launchctl", "load", str(PLIST_PATH)])
-        print("✅ LaunchAgent installed and loaded.")
+        if not collector_exists:
+            with open(COLLECTOR_PLIST_PATH, "wb") as f:
+                plistlib.dump(collector_plist, f)
+            # Load it into launchd
+            subprocess.run(["launchctl", "load", str(COLLECTOR_PLIST_PATH)])
+            print(f"✅ Collector LaunchAgent installed and loaded at {COLLECTOR_PLIST_PATH}")
+            
+        if not summary_exists:
+            with open(SUMMARY_PLIST_PATH, "wb") as f:
+                plistlib.dump(summary_plist, f)
+            # Load it into launchd
+            subprocess.run(["launchctl", "load", str(SUMMARY_PLIST_PATH)])
+            print(f"✅ Summary LaunchAgent installed and loaded at {SUMMARY_PLIST_PATH}")
     else:
         print("❌ Aborted.")
 
 
 def update_launchd_job():
-    if not PLIST_PATH.exists():
-        print("⚠️  No existing plist to update. Please run 'install' first.")
+    collector_exists = COLLECTOR_PLIST_PATH.exists()
+    summary_exists = SUMMARY_PLIST_PATH.exists()
+    
+    if not collector_exists and not summary_exists:
+        print("⚠️  No existing plists to update. Please run 'install' first.")
         return
 
-    plist_dict = _make_launchd_plist_dict()
-    print(f"📋 Will overwrite LaunchAgent plist at:\n    {PLIST_PATH}\n")
-    print("New Contents:")
-    print(plistlib.dumps(plist_dict).decode())
+    # Create plist objects
+    collector_plist = _make_collector_plist_dict()
+    summary_plist = _make_summary_plist_dict()
+    
+    if collector_exists:
+        print(f"📋 Will overwrite Collector LaunchAgent plist at:\n    {COLLECTOR_PLIST_PATH}\n")
+        print("New Contents:")
+        print(plistlib.dumps(collector_plist).decode())
+        
+    if summary_exists:
+        print(f"📋 Will overwrite Summary LaunchAgent plist at:\n    {SUMMARY_PLIST_PATH}\n")
+        print("New Contents:")
+        print(plistlib.dumps(summary_plist).decode())
 
-    print("\nType 'yes' to overwrite and reload this LaunchAgent:")
+    print("\nType 'yes' to overwrite and reload these LaunchAgents:")
     if input().strip().lower() == "yes":
-        with open(PLIST_PATH, "wb") as f:
-            plistlib.dump(plist_dict, f)
-
-        # Unload and reload so launchd picks up changes
-        subprocess.run(["launchctl", "unload", str(PLIST_PATH)])
-        subprocess.run(["launchctl", "load", str(PLIST_PATH)])
-        print("✅ LaunchAgent updated and reloaded.")
+        if collector_exists:
+            with open(COLLECTOR_PLIST_PATH, "wb") as f:
+                plistlib.dump(collector_plist, f)
+            # Unload and reload so launchd picks up changes
+            subprocess.run(["launchctl", "unload", str(COLLECTOR_PLIST_PATH)])
+            subprocess.run(["launchctl", "load", str(COLLECTOR_PLIST_PATH)])
+            print("✅ Collector LaunchAgent updated and reloaded.")
+            
+        if summary_exists:
+            with open(SUMMARY_PLIST_PATH, "wb") as f:
+                plistlib.dump(summary_plist, f)
+            # Unload and reload so launchd picks up changes
+            subprocess.run(["launchctl", "unload", str(SUMMARY_PLIST_PATH)])
+            subprocess.run(["launchctl", "load", str(SUMMARY_PLIST_PATH)])
+            print("✅ Summary LaunchAgent updated and reloaded.")
     else:
         print("❌ Aborted.")
 
 
 def remove_launchd_job():
-    if not PLIST_PATH.exists():
-        print("⚠️  No existing plist to remove.")
+    collector_exists = COLLECTOR_PLIST_PATH.exists()
+    summary_exists = SUMMARY_PLIST_PATH.exists()
+    
+    if not collector_exists and not summary_exists:
+        print("⚠️  No existing plists to remove.")
         return
-
-    print(f"📋 Found plist at {PLIST_PATH}.")
-    print("After unloading, the file itself will be deleted.\n")
-    print("Type 'yes' to unload and remove this LaunchAgent:")
+    
+    if collector_exists:
+        print(f"📋 Found collector plist at {COLLECTOR_PLIST_PATH}.")
+    if summary_exists:
+        print(f"📋 Found summary plist at {SUMMARY_PLIST_PATH}.")
+    
+    print("After unloading, the files will be deleted.\n")
+    print("Type 'yes' to unload and remove these LaunchAgents:")
     if input().strip().lower() == "yes":
-        subprocess.run(["launchctl", "unload", str(PLIST_PATH)])
-        PLIST_PATH.unlink()
-        print("✅ LaunchAgent unloaded and plist removed.")
+        if collector_exists:
+            subprocess.run(["launchctl", "unload", str(COLLECTOR_PLIST_PATH)])
+            COLLECTOR_PLIST_PATH.unlink()
+            print("✅ Collector LaunchAgent unloaded and plist removed.")
+            
+        if summary_exists:
+            subprocess.run(["launchctl", "unload", str(SUMMARY_PLIST_PATH)])
+            SUMMARY_PLIST_PATH.unlink()
+            print("✅ Summary LaunchAgent unloaded and plist removed.")
     else:
         print("❌ Aborted.")
 
