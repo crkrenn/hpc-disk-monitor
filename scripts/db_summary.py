@@ -18,7 +18,17 @@ DB_FILE = os.getenv("DISK_STATS_DB", str(Path.home() / "hpc-disk-monitor/data/di
 FS_LABELS = os.getenv("FILESYSTEM_LABELS", "tmpfs").split(",")
 
 def connect_db():
-    return sqlite3.connect(DB_FILE)
+    """Connect to the database with error handling.
+    
+    Returns:
+        Connection object or None if connection failed.
+    """
+    try:
+        return sqlite3.connect(DB_FILE)
+    except (sqlite3.Error, OSError, IOError) as e:
+        print(f"⚠️  Database connection error: {e.__class__.__name__}: {e}")
+        print(f"⚠️  Could not connect to database at {DB_FILE}")
+        return None
 
 def get_time_bounds_and_count(conn):
     c = conn.cursor()
@@ -102,69 +112,95 @@ def format_value(value, metric):
         return f"{value:.2f}"
 
 def main():
-    conn = connect_db()
-    
-    # Get all filesystems configured in .env that have data
-    configured_filesystems = FS_LABELS
-    filesystems = get_all_filesystems(conn)
-    
-    if not filesystems:
-        print("⚠️  No filesystem data found in database.")
-    else:
-        # Find which configured filesystems have data
-        found_fs = [fs for fs in configured_filesystems if fs in filesystems]
-        not_found_fs = [fs for fs in configured_filesystems if fs not in filesystems]
+    """Main entry point for the script."""
+    try:
+        # Connect to the database
+        conn = connect_db()
+        if conn is None:
+            print("⚠️  Cannot continue without database connection.")
+            return 1
         
-        print(f"Found data for {len(found_fs)} of {len(configured_filesystems)} configured filesystems: {', '.join(found_fs)}")
+        try:
+            # Get all filesystems configured in .env that have data
+            configured_filesystems = FS_LABELS
+            filesystems = get_all_filesystems(conn)
+            
+            if not filesystems:
+                print("⚠️  No filesystem data found in database.")
+            else:
+                # Find which configured filesystems have data
+                found_fs = [fs for fs in configured_filesystems if fs in filesystems]
+                not_found_fs = [fs for fs in configured_filesystems if fs not in filesystems]
+                
+                print(f"Found data for {len(found_fs)} of {len(configured_filesystems)} configured filesystems: {', '.join(found_fs)}")
+                
+                if not_found_fs:
+                    print(f"⚠️  No data found for these configured filesystems: {', '.join(not_found_fs)}")
+                
+                print()
+            
+            # Get latest summary data for all filesystems (one record per metric)
+            try:
+                summary = get_latest_summary_per_filesystem(conn)
+                if not summary:
+                    print("⚠️  No summary data found.")
+                    return 0
+            except sqlite3.Error as e:
+                print(f"⚠️  Error retrieving summary data: {e}")
+                return 1
         
-        if not_found_fs:
-            print(f"⚠️  No data found for these configured filesystems: {', '.join(not_found_fs)}")
+            # Group data by filesystem for better presentation
+            summary_by_fs = {}
+            for row in summary:
+                label, metric, avg, minv, maxv, std, timestamp, hostname = row
+                if label not in summary_by_fs:
+                    summary_by_fs[label] = {
+                        'data': [],
+                        'timestamp': timestamp,  # Use the timestamp from the first metric for this filesystem
+                        'hostname': hostname
+                    }
+                summary_by_fs[label]['data'].append([metric, avg, minv, maxv, std])
         
-        print()
-    
-    # Get latest summary data for all filesystems (one record per metric)
-    summary = get_latest_summary_per_filesystem(conn)
-    if not summary:
-        print("⚠️  No summary data found.")
-        return
-
-    # Group data by filesystem for better presentation
-    summary_by_fs = {}
-    for row in summary:
-        label, metric, avg, minv, maxv, std, timestamp, hostname = row
-        if label not in summary_by_fs:
-            summary_by_fs[label] = {
-                'data': [],
-                'timestamp': timestamp,  # Use the timestamp from the first metric for this filesystem
-                'hostname': hostname
-            }
-        summary_by_fs[label]['data'].append([metric, avg, minv, maxv, std])
-
-    # Display summary for each filesystem
-    for label, fs_info in summary_by_fs.items():
-        print(f"\n=== {label.upper()} ===")
-        print(f"Last updated: {fs_info['timestamp']} on {fs_info['hostname']}")
+            # Display summary for each filesystem
+            for label, fs_info in summary_by_fs.items():
+                print(f"\n=== {label.upper()} ===")
+                print(f"Last updated: {fs_info['timestamp']} on {fs_info['hostname']}")
+                
+                table = []
+                for metric, avg, minv, maxv, std in fs_info['data']:
+                    # Format values based on metric type
+                    table.append([
+                        metric.replace('_', ' ').title(),
+                        format_value(avg, metric),
+                        format_value(minv, metric),
+                        format_value(maxv, metric),
+                        format_value(std, metric)
+                    ])
+                
+                print(tabulate(table, headers=["Metric", "Avg", "Min", "Max", "Stddev"], tablefmt="grid"))
         
-        table = []
-        for metric, avg, minv, maxv, std in fs_info['data']:
-            # Format values based on metric type
-            table.append([
-                metric.replace('_', ' ').title(),
-                format_value(avg, metric),
-                format_value(minv, metric),
-                format_value(maxv, metric),
-                format_value(std, metric)
-            ])
+            # Show overall stats
+            try:
+                first_ts, last_ts, count = get_time_bounds_and_count(conn)
+                print("\n=== OVERALL STATISTICS ===")
+                print(f"📊 Total Samples: {count}")
+                print(f"📅 First Sample: {first_ts}")
+                print(f"📅 Last Sample : {last_ts}\n")
+            except sqlite3.Error as e:
+                print(f"\n⚠️  Error retrieving overall statistics: {e}")
+                
+            return 0
         
-        print(tabulate(table, headers=["Metric", "Avg", "Min", "Max", "Stddev"], tablefmt="grid"))
-
-    # Show overall stats
-    first_ts, last_ts, count = get_time_bounds_and_count(conn)
-    print("\n=== OVERALL STATISTICS ===")
-    print(f"📊 Total Samples: {count}")
-    print(f"📅 First Sample: {first_ts}")
-    print(f"📅 Last Sample : {last_ts}\n")
+        finally:
+            if conn:
+                conn.close()
+                
+    except Exception as e:
+        # Catch any unexpected exceptions to avoid traceback
+        print(f"⚠️  An unexpected error occurred: {e.__class__.__name__}: {str(e)}")
+        return 1
 
 
 if __name__ == "__main__":
-    main()
+    exit_code = main()
+    sys.exit(exit_code)
