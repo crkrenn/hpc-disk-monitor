@@ -10,10 +10,45 @@ preprocess_env()
 
 DB_FILE = os.getenv("DISK_STATS_DB", str(Path.home() / "hpc-disk-monitor/data/disk_stats.db"))
 
-def connect_db():
-    db_path = Path(DB_FILE)
-    db_path.parent.mkdir(parents=True, exist_ok=True)
-    return sqlite3.connect(DB_FILE)
+def connect_db(fail_gracefully=True):
+    """Connect to the database and create directory structure if needed.
+    
+    Args:
+        fail_gracefully: If True, return None instead of raising exceptions for filesystem errors
+        
+    Returns:
+        Connection object or None if error and fail_gracefully is True
+    """
+    try:
+        db_path = Path(DB_FILE)
+        try:
+            db_path.parent.mkdir(parents=True, exist_ok=True)
+        except (OSError, IOError) as e:
+            if fail_gracefully:
+                print(f"Error creating database directory: {e.__class__.__name__}: {e}")
+                print(f"Cannot access {db_path.parent}")
+                return None
+            raise
+            
+        # Try to check if we can actually write to this location
+        try:
+            # Test write permissions by touching a file
+            test_file = db_path.parent / ".db_write_test"
+            test_file.touch()
+            test_file.unlink(missing_ok=True)
+        except (OSError, IOError) as e:
+            if fail_gracefully:
+                print(f"Error writing to database directory: {e.__class__.__name__}: {e}")
+                print(f"Cannot write to {db_path.parent}")
+                return None
+            raise
+            
+        return sqlite3.connect(DB_FILE)
+    except (sqlite3.Error, OSError, IOError) as e:
+        if fail_gracefully:
+            print(f"Database connection error: {e.__class__.__name__}: {e}")
+            return None
+        raise
 
 def create_tables(conn):
     with conn:
