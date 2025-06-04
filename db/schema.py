@@ -8,6 +8,7 @@ sys.path.append(str(Path(__file__).resolve().parent.parent))
 from common.env_utils import preprocess_env
 preprocess_env()
 
+# Use HOME directory for database path by default
 DB_FILE = os.getenv("DISK_STATS_DB", str(Path.home() / "hpc-disk-monitor/data/disk_stats.db"))
 
 def connect_db(fail_gracefully=True):
