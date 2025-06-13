@@ -14,12 +14,12 @@ sys.path.append(str(Path(__file__).resolve().parent.parent.parent))
 with patch('argparse.ArgumentParser.parse_args') as mock_args:
     mock_args.return_value = MagicMock(port=8050, host='127.0.0.1', debug=False, no_browser=True)
     with patch.dict('os.environ', {"DASH_REFRESH_SECONDS": "10", "DISK_SAMPLING_MINUTES": "15"}):
-        from scripts import monitor_disk_metrics
+        from scripts import monitor_resource_metrics
 
 
-class TestMonitorDiskMetrics(unittest.TestCase):
+class TestMonitorResourceMetrics(unittest.TestCase):
     
-    @patch('scripts.monitor_disk_metrics.connect_db')
+    @patch('scripts.monitor_resource_metrics.connect_db')
     def test_fetch_summary_data_with_data(self, mock_connect_db):
         # Create mock connection and cursor
         mock_conn = MagicMock()
@@ -39,12 +39,12 @@ class TestMonitorDiskMetrics(unittest.TestCase):
         mock_cursor.fetchone.side_effect = [(True,), (2,)]  # Table exists, has 2 rows
         
         # Setup pandas read_sql_query mock
-        with patch('scripts.monitor_disk_metrics.pd.read_sql_query') as mock_read_sql:
+        with patch('scripts.monitor_resource_metrics.pd.read_sql_query') as mock_read_sql:
             mock_df = pd.DataFrame(data=mock_data, columns=mock_columns)
             mock_read_sql.return_value = mock_df
             
             # Call the function
-            result = monitor_disk_metrics.fetch_summary_data()
+            result = monitor_resource_metrics.fetch_summary_data()
             
             # Check results
             self.assertIsInstance(result, pd.DataFrame)
@@ -54,7 +54,7 @@ class TestMonitorDiskMetrics(unittest.TestCase):
             # Verify timestamp was converted to datetime
             self.assertEqual(result['timestamp'].dtype, 'datetime64[ns]')
     
-    @patch('scripts.monitor_disk_metrics.connect_db')
+    @patch('scripts.monitor_resource_metrics.connect_db')
     def test_fetch_summary_data_empty_table(self, mock_connect_db):
         # Create mock connection and cursor
         mock_conn = MagicMock()
@@ -67,7 +67,7 @@ class TestMonitorDiskMetrics(unittest.TestCase):
         mock_cursor.fetchone.side_effect = [(True,), (0,)]  # Table exists, but has 0 rows
         
         # Call the function with empty table
-        result = monitor_disk_metrics.fetch_summary_data()
+        result = monitor_resource_metrics.fetch_summary_data()
         
         # Check result is empty dataframe with expected columns
         self.assertIsInstance(result, pd.DataFrame)
@@ -75,7 +75,7 @@ class TestMonitorDiskMetrics(unittest.TestCase):
         self.assertEqual(list(result.columns), 
                          ["timestamp", "hostname", "label", "metric", "avg", "min", "max", "stddev"])
     
-    @patch('scripts.monitor_disk_metrics.connect_db')
+    @patch('scripts.monitor_resource_metrics.connect_db')
     def test_fetch_summary_data_missing_table(self, mock_connect_db):
         # Create mock connection and cursor
         mock_conn = MagicMock()
@@ -88,7 +88,7 @@ class TestMonitorDiskMetrics(unittest.TestCase):
         mock_cursor.fetchone.return_value = None  # Table doesn't exist
         
         # Call the function with missing table
-        result = monitor_disk_metrics.fetch_summary_data()
+        result = monitor_resource_metrics.fetch_summary_data()
         
         # Check result is empty dataframe with expected columns
         self.assertIsInstance(result, pd.DataFrame)
@@ -109,9 +109,9 @@ class TestMonitorDiskMetrics(unittest.TestCase):
         df = pd.DataFrame(data)
         
         # Call the function with different options
-        fig_basic = monitor_disk_metrics.build_graph(df, 'write_mbps', False, False, False)
-        fig_with_min_max = monitor_disk_metrics.build_graph(df, 'write_mbps', True, True, False)
-        fig_with_std = monitor_disk_metrics.build_graph(df, 'write_mbps', False, False, True)
+        fig_basic = monitor_resource_metrics.build_graph(df, 'write_mbps', False, False, False)
+        fig_with_min_max = monitor_resource_metrics.build_graph(df, 'write_mbps', True, True, False)
+        fig_with_std = monitor_resource_metrics.build_graph(df, 'write_mbps', False, False, True)
         
         # Check basic figure properties
         self.assertEqual(fig_basic.layout.title.text, "Write Mbps Over Time")
@@ -135,7 +135,7 @@ class TestMonitorDiskMetrics(unittest.TestCase):
         ])
         
         # Call the function
-        fig = monitor_disk_metrics.build_graph(df, 'write_mbps', True, True, True)
+        fig = monitor_resource_metrics.build_graph(df, 'write_mbps', True, True, True)
         
         # Check that we get a figure with an annotation explaining no data
         self.assertTrue(fig.layout.annotations)
@@ -150,9 +150,9 @@ class TestMonitorDiskMetrics(unittest.TestCase):
         df = pd.DataFrame(columns=["timestamp", "hostname", "label", "metric", "avg", "min", "max", "stddev"])
         
         # Mock the build_graph function to raise an exception
-        with patch('scripts.monitor_disk_metrics.build_graph', side_effect=Exception("Test error")):
+        with patch('scripts.monitor_resource_metrics.build_graph', side_effect=Exception("Test error")):
             # Call generate_graph
-            fig = monitor_disk_metrics.generate_graph(df, "write_mbps", True, False, 
+            fig = monitor_resource_metrics.generate_graph(df, "write_mbps", True, False, 
                                                     {"write_mbps": {"title": "Test", "height": 300}})
             
             # Should return an error figure, not raise an exception
@@ -163,11 +163,11 @@ class TestMonitorDiskMetrics(unittest.TestCase):
     def test_callback_with_invalid_inputs(self):
         """Test the callback handles invalid inputs gracefully."""
         # Test with None values
-        with patch('scripts.monitor_disk_metrics.fetch_summary_data') as mock_fetch:
+        with patch('scripts.monitor_resource_metrics.fetch_summary_data') as mock_fetch:
             mock_fetch.return_value = pd.DataFrame()  # Return empty dataframe
             
             # Call with invalid time range
-            result = monitor_disk_metrics.update_all_graphs("invalid_range", None, 1)
+            result = monitor_resource_metrics.update_all_graphs("invalid_range", None, 1)
             
             # Should return 7 items (6 figures + 1 text element)
             self.assertEqual(len(result), 7)
@@ -181,25 +181,25 @@ class TestMonitorDiskMetrics(unittest.TestCase):
             self.assertIn("Showing: Last Week", result[6])  # Should fall back to default
         
         # Test with empty detail_opts
-        with patch('scripts.monitor_disk_metrics.fetch_summary_data') as mock_fetch:
+        with patch('scripts.monitor_resource_metrics.fetch_summary_data') as mock_fetch:
             mock_fetch.return_value = pd.DataFrame()  # Return empty dataframe
             
             # Call with empty detail options
-            result = monitor_disk_metrics.update_all_graphs("1d", [], 1)
+            result = monitor_resource_metrics.update_all_graphs("1d", [], 1)
             
             # Should still work without errors
             self.assertEqual(len(result), 7)
             
         # Test with severe exception that triggers the catch-all handler
-        with patch('scripts.monitor_disk_metrics.fetch_summary_data') as mock_fetch:
+        with patch('scripts.monitor_resource_metrics.fetch_summary_data') as mock_fetch:
             # Make it raise an exception when accessed
             mock_fetch.side_effect = Exception("Critical test error")
             
             # Also patch the generate_graph to ensure it also raises an error
             # This simulates a more severe error condition that should trigger the outer exception handler
-            with patch('scripts.monitor_disk_metrics.generate_graph', side_effect=Exception("Critical graph error")):
+            with patch('scripts.monitor_resource_metrics.generate_graph', side_effect=Exception("Critical graph error")):
                 # The callback should handle this gracefully
-                result = monitor_disk_metrics.update_all_graphs("1d", ["minmax"], 1)
+                result = monitor_resource_metrics.update_all_graphs("1d", ["minmax"], 1)
                 
                 # Should return error figures
                 self.assertEqual(len(result), 7)

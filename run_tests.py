@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Test runner for HPC Disk Monitor project.
+Test runner for HPC Resource Monitor project.
 Runs all unit and integration tests.
 """
 
@@ -15,7 +15,7 @@ sys.path.append(str(project_root))
 
 def run_tests():
     """Discover and run all tests in the project."""
-    print("Running HPC Disk Monitor tests...")
+    print("Running HPC Resource Monitor tests...")
     
     # Create test suites
     test_loader = unittest.TestLoader()

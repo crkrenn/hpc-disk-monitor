@@ -5,8 +5,8 @@ FILESYSTEM_PATHS={{HOME}},/p/lustre1/{{whoami}},/p/lustre1/{{whoami}},/usr/works
 FILESYSTEM_LABELS=home,lustre1,lustre2,workspace
 
 # API configuration
-API_ENDPOINTS=https://httpbin.org/status/200,https://httpbin.org/delay/1
-API_NAMES=HTTPBin Status API,HTTPBin Delay API
+API_ENDPOINTS=https://dgps-polling-prod-green-2p2i362xna-uc.a.run.app/testing,https://httpbin.org/status/200
+API_NAMES=DGPS Polling API,HTTPBin Test API
 API_REQUEST_TIMEOUT=30
 
 # Database location (supports both old and new variable names)

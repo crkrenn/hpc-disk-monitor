@@ -15,7 +15,7 @@ sys.path.append(str(Path(__file__).resolve().parent.parent.parent))
 from db.schema import create_tables
 
 
-class TestDiskMetricsIntegration(unittest.TestCase):
+class TestResourceMetricsIntegration(unittest.TestCase):
     
     def setUp(self):
         # Create temporary directories for testing
@@ -24,7 +24,7 @@ class TestDiskMetricsIntegration(unittest.TestCase):
         os.makedirs(self.test_fs_path, exist_ok=True)
         
         # Create a temporary database
-        self.db_path = os.path.join(self.temp_dir, "test_disk_stats.db")
+        self.db_path = os.path.join(self.temp_dir, "test_resource_stats.db")
         self.conn = sqlite3.connect(self.db_path)
         create_tables(self.conn)
     
@@ -41,13 +41,13 @@ class TestDiskMetricsIntegration(unittest.TestCase):
         env = os.environ.copy()
         env["FILESYSTEM_PATHS"] = self.test_fs_path
         env["FILESYSTEM_LABELS"] = "test_fs"
-        env["DISK_STATS_DB"] = self.db_path
+        env["RESOURCE_STATS_DB"] = self.db_path
         
         # Run the collector script
         script_path = os.path.join(
             Path(__file__).resolve().parent.parent.parent,
             "scripts",
-            "disk_metrics_collector.py"
+            "resource_metrics_collector.py"
         )
         
         result = subprocess.run(
@@ -161,13 +161,13 @@ class TestDiskMetricsIntegration(unittest.TestCase):
         env = os.environ.copy()
         env["FILESYSTEM_PATHS"] = self.test_fs_path
         env["FILESYSTEM_LABELS"] = "test_fs"
-        env["DISK_STATS_DB"] = self.db_path
+        env["RESOURCE_STATS_DB"] = self.db_path
         
         # Run the collector script
         script_path = os.path.join(
             Path(__file__).resolve().parent.parent.parent,
             "scripts",
-            "disk_metrics_collector.py"
+            "resource_metrics_collector.py"
         )
         
         result = subprocess.run(

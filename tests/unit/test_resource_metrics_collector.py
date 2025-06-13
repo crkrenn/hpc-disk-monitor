@@ -16,18 +16,18 @@ sys.path.append(str(Path(__file__).resolve().parent.parent.parent))
 with patch('argparse.ArgumentParser.parse_args') as mock_args:
     mock_args.return_value = MagicMock(verbose=False)
     # Import the module after mocking argparse
-    from scripts import disk_metrics_collector
+    from scripts import resource_metrics_collector
 
 
-class TestDiskMetricsCollector(unittest.TestCase):
+class TestResourceMetricsCollector(unittest.TestCase):
     
     def setUp(self):
         # Reset mocks between tests
-        disk_metrics_collector.args.verbose = False
+        resource_metrics_collector.args.verbose = False
     
     def test_current_timestamp(self):
         # Test timestamp format
-        timestamp = disk_metrics_collector.current_timestamp()
+        timestamp = resource_metrics_collector.current_timestamp()
         # Should be in format "YYYY-MM-DD HH:MM"
         try:
             datetime.strptime(timestamp, "%Y-%m-%d %H:%M")
@@ -40,20 +40,20 @@ class TestDiskMetricsCollector(unittest.TestCase):
     def test_generate_data(self):
         # Test data generation
         size = 1024
-        data = disk_metrics_collector.generate_data(size)
+        data = resource_metrics_collector.generate_data(size)
         
         self.assertEqual(len(data), size)
         self.assertIsInstance(data, bytes)
     
     def test_calculate_latency_stats_empty(self):
         # Test with empty list
-        result = disk_metrics_collector.calculate_latency_stats([])
+        result = resource_metrics_collector.calculate_latency_stats([])
         
         self.assertEqual(result, {"min": 0, "max": 0, "avg": 0, "stdev": 0})
     
     def test_calculate_latency_stats_single(self):
         # Test with single value
-        result = disk_metrics_collector.calculate_latency_stats([0.5])
+        result = resource_metrics_collector.calculate_latency_stats([0.5])
         
         self.assertEqual(result["min"], 0.5)
         self.assertEqual(result["max"], 0.5)
@@ -63,17 +63,17 @@ class TestDiskMetricsCollector(unittest.TestCase):
     def test_calculate_latency_stats_multiple(self):
         # Test with multiple values
         values = [0.1, 0.2, 0.3, 0.4, 0.5]
-        result = disk_metrics_collector.calculate_latency_stats(values)
+        result = resource_metrics_collector.calculate_latency_stats(values)
         
         self.assertEqual(result["min"], 0.1)
         self.assertEqual(result["max"], 0.5)
         self.assertEqual(result["avg"], 0.3)
         self.assertAlmostEqual(result["stdev"], statistics.stdev(values))
     
-    @patch('scripts.disk_metrics_collector.os.fsync')
-    @patch('scripts.disk_metrics_collector.time.time')
-    @patch('scripts.disk_metrics_collector.open')
-    @patch('scripts.disk_metrics_collector.generate_data')
+    @patch('scripts.resource_metrics_collector.os.fsync')
+    @patch('scripts.resource_metrics_collector.time.time')
+    @patch('scripts.resource_metrics_collector.open')
+    @patch('scripts.resource_metrics_collector.generate_data')
     def test_test_io_speed_write(self, mock_generate_data, mock_open, mock_time, mock_fsync):
         # Mock time to control test duration
         mock_time.side_effect = [0, 0, 0.1, 1, 1.1, 2, 2.1, 3, 3.1, 4]
@@ -84,10 +84,10 @@ class TestDiskMetricsCollector(unittest.TestCase):
         mock_file.fileno.return_value = 123
         
         # Mock data generation
-        mock_generate_data.return_value = b'x' * disk_metrics_collector.CHUNK_SIZE
+        mock_generate_data.return_value = b'x' * resource_metrics_collector.CHUNK_SIZE
         
         # Run the test
-        result = disk_metrics_collector.test_io_speed("/test/dir", "write")
+        result = resource_metrics_collector.test_io_speed("/test/dir", "write")
         
         # Verify results
         self.assertIn("mbps", result)
@@ -106,8 +106,8 @@ class TestDiskMetricsCollector(unittest.TestCase):
         self.assertTrue(mock_file.flush.called)
         self.assertTrue(mock_fsync.called)
     
-    @patch('scripts.disk_metrics_collector.time.time')
-    @patch('scripts.disk_metrics_collector.open')
+    @patch('scripts.resource_metrics_collector.time.time')
+    @patch('scripts.resource_metrics_collector.open')
     def test_test_io_speed_read(self, mock_open, mock_time):
         # Mock time to control test duration
         # First call is the start time, next ones alternate between op_start and checks for end of loop
@@ -123,14 +123,14 @@ class TestDiskMetricsCollector(unittest.TestCase):
         
         # Ensure we hit the empty data case to trigger seek(0)
         mock_file.read.side_effect = [
-            b'x' * disk_metrics_collector.CHUNK_SIZE,
-            b'x' * disk_metrics_collector.CHUNK_SIZE,
+            b'x' * resource_metrics_collector.CHUNK_SIZE,
+            b'x' * resource_metrics_collector.CHUNK_SIZE,
             b'',  # This should trigger a seek(0)
-            b'x' * disk_metrics_collector.CHUNK_SIZE
+            b'x' * resource_metrics_collector.CHUNK_SIZE
         ]
         
         # Run the test
-        result = disk_metrics_collector.test_io_speed("/test/dir", "read")
+        result = resource_metrics_collector.test_io_speed("/test/dir", "read")
         
         # Verify results
         self.assertIn("mbps", result)
@@ -144,8 +144,8 @@ class TestDiskMetricsCollector(unittest.TestCase):
         # We don't need to verify seek is called - it's only called in certain conditions
         # that might not be hit in our test due to how we mocked the time and data reads
     
-    @patch('scripts.disk_metrics_collector.connect_db')
-    @patch('scripts.disk_metrics_collector.create_tables')
+    @patch('scripts.resource_metrics_collector.connect_db')
+    @patch('scripts.resource_metrics_collector.create_tables')
     def test_init_db(self, mock_create_tables, mock_connect_db):
         # Mock the connection and cursor
         mock_conn = MagicMock()
@@ -162,7 +162,7 @@ class TestDiskMetricsCollector(unittest.TestCase):
         ]
         
         # Test non-verbose mode
-        disk_metrics_collector.init_db()
+        resource_metrics_collector.init_db()
         
         # Verify database functions were called
         mock_connect_db.assert_called_once()
@@ -171,15 +171,15 @@ class TestDiskMetricsCollector(unittest.TestCase):
         # Test verbose mode
         mock_connect_db.reset_mock()
         mock_create_tables.reset_mock()
-        disk_metrics_collector.args.verbose = True
+        resource_metrics_collector.args.verbose = True
         
-        disk_metrics_collector.init_db()
+        resource_metrics_collector.init_db()
         
         mock_connect_db.assert_called_once()
         mock_create_tables.assert_called_once_with(mock_conn)
         self.assertTrue(mock_cursor.execute.called)
     
-    @patch('scripts.disk_metrics_collector.connect_db')
+    @patch('scripts.resource_metrics_collector.connect_db')
     def test_insert_stat_record(self, mock_connect_db):
         # Mock the connection and cursor
         mock_conn = MagicMock()
@@ -201,7 +201,7 @@ class TestDiskMetricsCollector(unittest.TestCase):
         }
         
         # Call the function
-        disk_metrics_collector.insert_stat_record(record)
+        resource_metrics_collector.insert_stat_record(record)
         
         # Verify database operations
         mock_connect_db.assert_called_once()
@@ -213,7 +213,7 @@ class TestDiskMetricsCollector(unittest.TestCase):
         
         self.assertIn("INSERT INTO disk_stats", sql)
         self.assertEqual(params[0], record["timestamp"])
-        self.assertEqual(params[1], disk_metrics_collector.HOSTNAME)
+        self.assertEqual(params[1], resource_metrics_collector.HOSTNAME)
         self.assertEqual(params[2], record["label"])
         self.assertEqual(params[3], record["write_mbps"])
         self.assertEqual(params[4], record["write_iops"])
@@ -222,8 +222,8 @@ class TestDiskMetricsCollector(unittest.TestCase):
         self.assertEqual(params[7], record["read_iops"])
         self.assertEqual(params[8], record["read_lat_avg"])
     
-    @patch('scripts.disk_metrics_collector.current_timestamp')
-    @patch('scripts.disk_metrics_collector.connect_db')
+    @patch('scripts.resource_metrics_collector.current_timestamp')
+    @patch('scripts.resource_metrics_collector.connect_db')
     def test_insert_summary_stats(self, mock_connect_db, mock_timestamp):
         # Mock the connection and cursor
         mock_conn = MagicMock()
@@ -243,7 +243,7 @@ class TestDiskMetricsCollector(unittest.TestCase):
         }
         
         # Call the function
-        disk_metrics_collector.insert_summary_stats(label, summary)
+        resource_metrics_collector.insert_summary_stats(label, summary)
         
         # Verify database operations
         mock_connect_db.assert_called_once()
@@ -255,11 +255,11 @@ class TestDiskMetricsCollector(unittest.TestCase):
         
         self.assertIn("INSERT INTO disk_stats_summary", first_sql)
         self.assertEqual(first_params[0], "2023-01-01 12:00")  # timestamp
-        self.assertEqual(first_params[1], disk_metrics_collector.HOSTNAME)  # hostname
+        self.assertEqual(first_params[1], resource_metrics_collector.HOSTNAME)  # hostname
         self.assertEqual(first_params[2], "test_fs")  # label
         self.assertIn(first_params[3], ["write_mbps", "read_mbps"])  # metric
     
-    @patch('scripts.disk_metrics_collector.connect_db')
+    @patch('scripts.resource_metrics_collector.connect_db')
     def test_compute_and_store_summary(self, mock_connect_db):
         # Mock the connection and cursor
         mock_conn = MagicMock()
@@ -278,8 +278,8 @@ class TestDiskMetricsCollector(unittest.TestCase):
         label = "test_fs"
         
         # Patch insert_summary_stats to verify it's called with correct data
-        with patch('scripts.disk_metrics_collector.insert_summary_stats') as mock_insert:
-            disk_metrics_collector.compute_and_store_summary(label)
+        with patch('scripts.resource_metrics_collector.insert_summary_stats') as mock_insert:
+            resource_metrics_collector.compute_and_store_summary(label)
             
             # Verify database query
             mock_connect_db.assert_called_once()
@@ -300,18 +300,18 @@ class TestDiskMetricsCollector(unittest.TestCase):
         
         # Test verbose mode
         mock_connect_db.reset_mock()
-        disk_metrics_collector.args.verbose = True
+        resource_metrics_collector.args.verbose = True
         
         # Patch print function to verify verbose output
         with patch('builtins.print') as mock_print:
-            with patch('scripts.disk_metrics_collector.insert_summary_stats'):
-                disk_metrics_collector.compute_and_store_summary(label)
+            with patch('scripts.resource_metrics_collector.insert_summary_stats'):
+                resource_metrics_collector.compute_and_store_summary(label)
                 
                 # Verify verbose output
                 mock_print.assert_any_call(f"Computing summary statistics for {label} since {datetime.now() - timedelta(hours=1):%Y-%m-%d %H:%M}...")
                 mock_print.assert_any_call(f"Found 2 data points for {label} in the last hour")
     
-    @patch('scripts.disk_metrics_collector.connect_db')
+    @patch('scripts.resource_metrics_collector.connect_db')
     def test_decimate_old_data(self, mock_connect_db):
         # Mock the connection and cursor
         mock_conn = MagicMock()
@@ -321,7 +321,7 @@ class TestDiskMetricsCollector(unittest.TestCase):
         mock_conn.cursor.return_value = mock_cursor
         
         # Call the function
-        disk_metrics_collector.decimate_old_data()
+        resource_metrics_collector.decimate_old_data()
         
         # Verify database operations
         mock_connect_db.assert_called_once()
@@ -339,16 +339,23 @@ class TestDiskMetricsCollector(unittest.TestCase):
         self.assertIn("datetime('now', '-1 days')", second_sql)
         self.assertIn("rowid % 6 != 0", second_sql)
     
-    @patch('scripts.disk_metrics_collector.os.remove')
-    @patch('scripts.disk_metrics_collector.test_io_speed')
-    @patch('scripts.disk_metrics_collector.compute_and_store_summary')
-    @patch('scripts.disk_metrics_collector.insert_stat_record')
-    @patch('scripts.disk_metrics_collector.decimate_old_data')
-    @patch('scripts.disk_metrics_collector.current_timestamp')
-    def test_run_once_and_record(self, mock_timestamp, mock_decimate, mock_insert, 
+    @patch('scripts.resource_metrics_collector.os.remove')
+    @patch('scripts.resource_metrics_collector.test_io_speed')
+    @patch('scripts.resource_metrics_collector.compute_and_store_summary')
+    @patch('scripts.resource_metrics_collector.insert_stat_record')
+    @patch('scripts.resource_metrics_collector.decimate_old_data')
+    @patch('scripts.resource_metrics_collector.current_timestamp')
+    @patch('scripts.resource_metrics_collector.os.path.isdir')
+    @patch('scripts.resource_metrics_collector.open')
+    def test_run_once_and_record(self, mock_open, mock_isdir, mock_timestamp, mock_decimate, mock_insert, 
                               mock_compute, mock_test_io, mock_remove):
         # Mock timestamp
         mock_timestamp.return_value = "2023-01-01 12:00"
+        
+        # Mock directory checks
+        mock_isdir.return_value = True
+        mock_file = MagicMock()
+        mock_open.return_value.__enter__.return_value = mock_file
         
         # Mock I/O test results
         mock_test_io.side_effect = [
@@ -361,14 +368,14 @@ class TestDiskMetricsCollector(unittest.TestCase):
         ]
         
         # Set up test filesystems
-        original_fs_config = disk_metrics_collector.FILESYSTEM_CONFIG
-        disk_metrics_collector.FILESYSTEM_CONFIG = {
+        original_fs_config = resource_metrics_collector.FILESYSTEM_CONFIG
+        resource_metrics_collector.FILESYSTEM_CONFIG = {
             "/test/path1": "test_fs1",
             "/test/path2": "test_fs2"
         }
         
         # Test non-verbose mode
-        disk_metrics_collector.run_once_and_record()
+        resource_metrics_collector.run_once_and_record()
         
         # Verify I/O tests were run
         self.assertEqual(mock_test_io.call_count, 4)  # 2 filesystems x 2 modes
@@ -401,6 +408,13 @@ class TestDiskMetricsCollector(unittest.TestCase):
         mock_insert.reset_mock()
         mock_compute.reset_mock()
         mock_decimate.reset_mock()
+        mock_isdir.reset_mock()
+        mock_open.reset_mock()
+        
+        # Reset mocks for verbose test
+        mock_isdir.return_value = True
+        mock_file = MagicMock()
+        mock_open.return_value.__enter__.return_value = mock_file
         
         # Reset test I/O results
         mock_test_io.side_effect = [
@@ -412,11 +426,11 @@ class TestDiskMetricsCollector(unittest.TestCase):
             {"error": "test error"},  # read
         ]
         
-        disk_metrics_collector.args.verbose = True
+        resource_metrics_collector.args.verbose = True
         
         # Patch print function to verify verbose output
         with patch('builtins.print') as mock_print:
-            disk_metrics_collector.run_once_and_record()
+            resource_metrics_collector.run_once_and_record()
             
             # Verify verbose output
             mock_print.assert_any_call("Testing test_fs1 (/test/path1)...")
@@ -424,10 +438,10 @@ class TestDiskMetricsCollector(unittest.TestCase):
             mock_print.assert_any_call("Error testing test_fs2: test error test error")
             mock_print.assert_any_call("test_fs1 results:")
             mock_print.assert_any_call("Decimating old data...")
-            mock_print.assert_any_call("Done.")
+            mock_print.assert_any_call("Done. Successfully processed 1 of 2 filesystems.")
         
         # Restore original filesystem config
-        disk_metrics_collector.FILESYSTEM_CONFIG = original_fs_config
+        resource_metrics_collector.FILESYSTEM_CONFIG = original_fs_config
 
 
 if __name__ == '__main__':

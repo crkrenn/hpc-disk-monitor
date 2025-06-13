@@ -14,7 +14,10 @@ preprocess_env()
 
 # Paths
 COLLECTOR_SCRIPT_PATH = (
-    Path(__file__).resolve().parent.parent / "scripts" / "disk_metrics_collector.py"
+    Path(__file__).resolve().parent.parent / "scripts" / "resource_metrics_collector.py"
+)
+API_COLLECTOR_SCRIPT_PATH = (
+    Path(__file__).resolve().parent.parent / "scripts" / "api_status_collector.py"
 )
 SUMMARY_SCRIPT_PATH = (
     Path(__file__).resolve().parent.parent / "scripts" / "db_summary.py"
@@ -22,22 +25,27 @@ SUMMARY_SCRIPT_PATH = (
 PYTHON_EXEC = Path(sys.executable)
 
 # Comment/Label used to identify the jobs
-COLLECTOR_CRON_COMMENT = "# hpc-disk-monitor collector"
-SUMMARY_CRON_COMMENT = "# hpc-disk-monitor summary"
+COLLECTOR_CRON_COMMENT = "# hpc-resource-monitor collector"
+API_COLLECTOR_CRON_COMMENT = "# hpc-resource-monitor api-collector"
+SUMMARY_CRON_COMMENT = "# hpc-resource-monitor summary"
 
 # LaunchAgent identifiers
-COLLECTOR_PLIST_LABEL = "com.hpc.diskmonitor"  # must match the filename
-SUMMARY_PLIST_LABEL = "com.hpc.diskmonitor.summary"
+COLLECTOR_PLIST_LABEL = "com.hpc.resourcemonitor"  # must match the filename
+API_COLLECTOR_PLIST_LABEL = "com.hpc.resourcemonitor.api"
+SUMMARY_PLIST_LABEL = "com.hpc.resourcemonitor.summary"
 LAUNCH_AGENTS_DIR = Path.home() / "Library" / "LaunchAgents"
 COLLECTOR_PLIST_PATH = LAUNCH_AGENTS_DIR / f"{COLLECTOR_PLIST_LABEL}.plist"
+API_COLLECTOR_PLIST_PATH = LAUNCH_AGENTS_DIR / f"{API_COLLECTOR_PLIST_LABEL}.plist"
 SUMMARY_PLIST_PATH = LAUNCH_AGENTS_DIR / f"{SUMMARY_PLIST_LABEL}.plist"
 
 # Schedule configuration from env
 DISK_SAMPLING_MINUTES = int(os.environ.get("DISK_SAMPLING_MINUTES", "5"))
+API_SAMPLING_MINUTES = int(os.environ.get("API_SAMPLING_MINUTES", "5"))
 SUMMARY_INTERVAL_HOURS = 24  # Run summary every 24 hours
 
 # Cron schedules
 COLLECTOR_CRON_SCHEDULE = f"*/{DISK_SAMPLING_MINUTES} * * * *"  # Every X minutes
+API_COLLECTOR_CRON_SCHEDULE = f"*/{API_SAMPLING_MINUTES} * * * *"  # Every X minutes
 SUMMARY_CRON_SCHEDULE = f"0 */24 * * *"  # Every 24 hours at minute 0
 
 # Inline environment variables (flattened) for both cron and launchd
@@ -46,11 +54,18 @@ ENV_EXPORTS = {
     "FILESYSTEM_PATHS": os.environ.get("FILESYSTEM_PATHS", ""),
     "FILESYSTEM_LABELS": os.environ.get("FILESYSTEM_LABELS", ""),
     
-    # Database location
+    # API configuration
+    "API_ENDPOINTS": os.environ.get("API_ENDPOINTS", ""),
+    "API_NAMES": os.environ.get("API_NAMES", ""),
+    "API_REQUEST_TIMEOUT": os.environ.get("API_REQUEST_TIMEOUT", "30"),
+    
+    # Database location (backward compatibility)
+    "RESOURCE_STATS_DB": os.environ.get("RESOURCE_STATS_DB", ""),
     "DISK_STATS_DB": os.environ.get("DISK_STATS_DB", ""),
     
     # Data collection and display settings
     "DISK_SAMPLING_MINUTES": os.environ.get("DISK_SAMPLING_MINUTES", "5"),
+    "API_SAMPLING_MINUTES": os.environ.get("API_SAMPLING_MINUTES", "5"),
     "DASH_REFRESH_SECONDS": os.environ.get("DASH_REFRESH_SECONDS", "5"),
 }
 
@@ -74,6 +89,8 @@ def pretty_print_cron_entry(entry_line: str):
     # Detect which comment is used in this entry
     if SUMMARY_CRON_COMMENT in entry_line:
         job_comment = SUMMARY_CRON_COMMENT
+    elif API_COLLECTOR_CRON_COMMENT in entry_line:
+        job_comment = API_COLLECTOR_CRON_COMMENT
     else:
         job_comment = COLLECTOR_CRON_COMMENT
         
@@ -94,10 +111,11 @@ def pretty_print_cron_entry(entry_line: str):
 def install_cron_job():
     current = get_crontab_lines()
     collector_exists = any(COLLECTOR_CRON_COMMENT in line for line in current)
+    api_collector_exists = any(API_COLLECTOR_CRON_COMMENT in line for line in current)
     summary_exists = any(SUMMARY_CRON_COMMENT in line for line in current)
     
-    if collector_exists and summary_exists:
-        print("⚠️  Both collector and summary cron jobs already exist.")
+    if collector_exists and api_collector_exists and summary_exists:
+        print("⚠️  All cron jobs (disk collector, API collector, and summary) already exist.")
         return
 
     print("📋 Current crontab:")
@@ -110,9 +128,16 @@ def install_cron_job():
     # Add collector job if needed
     if not collector_exists:
         collector_entry = f"{COLLECTOR_CRON_SCHEDULE} {env_str} {PYTHON_EXEC} {COLLECTOR_SCRIPT_PATH} {COLLECTOR_CRON_COMMENT}"
-        print("Adding collector job:")
+        print("Adding disk collector job:")
         pretty_print_cron_entry(collector_entry)
         new_crontab.append(collector_entry)
+    
+    # Add API collector job if needed
+    if not api_collector_exists:
+        api_collector_entry = f"{API_COLLECTOR_CRON_SCHEDULE} {env_str} {PYTHON_EXEC} {API_COLLECTOR_SCRIPT_PATH} {API_COLLECTOR_CRON_COMMENT}"
+        print("\nAdding API collector job:")
+        pretty_print_cron_entry(api_collector_entry)
+        new_crontab.append(api_collector_entry)
     
     # Add summary job if needed
     if not summary_exists:
@@ -129,12 +154,16 @@ def update_cron_job():
     current = get_crontab_lines()
     filtered = [line for line in current 
                 if COLLECTOR_CRON_COMMENT not in line 
+                and API_COLLECTOR_CRON_COMMENT not in line
                 and SUMMARY_CRON_COMMENT not in line]
 
     env_str = " ".join(f"{k}={v}" for k, v in ENV_EXPORTS.items())
     
     # Create collector job entry
     collector_entry = f"{COLLECTOR_CRON_SCHEDULE} {env_str} {PYTHON_EXEC} {COLLECTOR_SCRIPT_PATH} {COLLECTOR_CRON_COMMENT}"
+    
+    # Create API collector job entry
+    api_collector_entry = f"{API_COLLECTOR_CRON_SCHEDULE} {env_str} {PYTHON_EXEC} {API_COLLECTOR_SCRIPT_PATH} {API_COLLECTOR_CRON_COMMENT}"
     
     # Create summary job entry
     summary_entry = f"{SUMMARY_CRON_SCHEDULE} {env_str} {PYTHON_EXEC} {SUMMARY_SCRIPT_PATH} --time-period 1d --recompute {SUMMARY_CRON_COMMENT}"
@@ -143,13 +172,16 @@ def update_cron_job():
     print("\n".join(current) or "(empty)")
     print("\n--- Updating jobs ---\n")
     
-    print("Updating collector job:")
+    print("Updating disk collector job:")
     pretty_print_cron_entry(collector_entry)
+    
+    print("\nUpdating API collector job:")
+    pretty_print_cron_entry(api_collector_entry)
     
     print("\nUpdating summary job:")
     pretty_print_cron_entry(summary_entry)
 
-    new_crontab = filtered + [collector_entry, summary_entry]
+    new_crontab = filtered + [collector_entry, api_collector_entry, summary_entry]
     _confirm_and_apply_cron(new_crontab)
 
 
@@ -157,6 +189,7 @@ def remove_cron_job():
     current = get_crontab_lines()
     new_crontab = [line for line in current 
                    if COLLECTOR_CRON_COMMENT not in line 
+                   and API_COLLECTOR_CRON_COMMENT not in line
                    and SUMMARY_CRON_COMMENT not in line]
 
     print("📋 Current crontab:")
@@ -202,12 +235,42 @@ def _make_collector_plist_dict() -> dict:
         # Load at login (optional if you want it always active when user logs in)
         "RunAtLoad": True,
         "EnvironmentVariables": env_dict,
-        # Redirect stdout/stderr into ~/Library/Logs/com.hpc.diskmonitor.log
+        # Redirect stdout/stderr into ~/Library/Logs/com.hpc.resourcemonitor.log
         "StandardOutPath": str(
             Path.home() / "Library" / "Logs" / f"{COLLECTOR_PLIST_LABEL}.out.log"
         ),
         "StandardErrorPath": str(
             Path.home() / "Library" / "Logs" / f"{COLLECTOR_PLIST_LABEL}.err.log"
+        ),
+    }
+    return plist
+
+def _make_api_collector_plist_dict() -> dict:
+    """
+    Build a Python dict representing the plist content for the API collector LaunchAgent.
+    - Runs every X minutes via StartInterval.
+    - Passes environment variables via 'EnvironmentVariables' key.
+    """
+    # Command plus arguments:
+    program_args = [str(PYTHON_EXEC), str(API_COLLECTOR_SCRIPT_PATH)]
+
+    # Only include environment variables that are non-empty:
+    env_dict = {k: v for k, v in ENV_EXPORTS.items() if v}
+
+    plist = {
+        "Label": API_COLLECTOR_PLIST_LABEL,
+        "ProgramArguments": program_args,
+        # Run at specified interval (in seconds)
+        "StartInterval": API_SAMPLING_MINUTES * 60,  # Convert minutes to seconds
+        # Load at login (optional if you want it always active when user logs in)
+        "RunAtLoad": True,
+        "EnvironmentVariables": env_dict,
+        # Redirect stdout/stderr into ~/Library/Logs/com.hpc.resourcemonitor.api.log
+        "StandardOutPath": str(
+            Path.home() / "Library" / "Logs" / f"{API_COLLECTOR_PLIST_LABEL}.out.log"
+        ),
+        "StandardErrorPath": str(
+            Path.home() / "Library" / "Logs" / f"{API_COLLECTOR_PLIST_LABEL}.err.log"
         ),
     }
     return plist
@@ -238,7 +301,7 @@ def _make_summary_plist_dict() -> dict:
         # Load at login (optional if you want it always active when user logs in)
         "RunAtLoad": True,
         "EnvironmentVariables": env_dict,
-        # Redirect stdout/stderr into ~/Library/Logs/com.hpc.diskmonitor.summary.log
+        # Redirect stdout/stderr into ~/Library/Logs/com.hpc.resourcemonitor.summary.log
         "StandardOutPath": str(
             Path.home() / "Library" / "Logs" / f"{SUMMARY_PLIST_LABEL}.out.log"
         ),
@@ -254,18 +317,26 @@ def install_launchd_job():
     
     # Check if plists already exist
     collector_exists = COLLECTOR_PLIST_PATH.exists()
+    api_collector_exists = API_COLLECTOR_PLIST_PATH.exists()
     summary_exists = SUMMARY_PLIST_PATH.exists()
     
-    if collector_exists and summary_exists:
-        print("⚠️  Both LaunchAgent plists already exist.")
+    if collector_exists and api_collector_exists and summary_exists:
+        print("⚠️  All LaunchAgent plists already exist.")
         return
 
     # Install collector if needed
     if not collector_exists:
         collector_plist = _make_collector_plist_dict()
-        print(f"📋 Will write Collector LaunchAgent plist to:\n    {COLLECTOR_PLIST_PATH}\n")
+        print(f"📋 Will write Disk Collector LaunchAgent plist to:\n    {COLLECTOR_PLIST_PATH}\n")
         print("Contents:")
         print(plistlib.dumps(collector_plist).decode())
+    
+    # Install API collector if needed
+    if not api_collector_exists:
+        api_collector_plist = _make_api_collector_plist_dict()
+        print(f"📋 Will write API Collector LaunchAgent plist to:\n    {API_COLLECTOR_PLIST_PATH}\n")
+        print("Contents:")
+        print(plistlib.dumps(api_collector_plist).decode())
     
     # Install summary if needed
     if not summary_exists:
@@ -281,7 +352,14 @@ def install_launchd_job():
                 plistlib.dump(collector_plist, f)
             # Load it into launchd
             subprocess.run(["launchctl", "load", str(COLLECTOR_PLIST_PATH)])
-            print(f"✅ Collector LaunchAgent installed and loaded at {COLLECTOR_PLIST_PATH}")
+            print(f"✅ Disk Collector LaunchAgent installed and loaded at {COLLECTOR_PLIST_PATH}")
+            
+        if not api_collector_exists:
+            with open(API_COLLECTOR_PLIST_PATH, "wb") as f:
+                plistlib.dump(api_collector_plist, f)
+            # Load it into launchd
+            subprocess.run(["launchctl", "load", str(API_COLLECTOR_PLIST_PATH)])
+            print(f"✅ API Collector LaunchAgent installed and loaded at {API_COLLECTOR_PLIST_PATH}")
             
         if not summary_exists:
             with open(SUMMARY_PLIST_PATH, "wb") as f:
@@ -295,20 +373,27 @@ def install_launchd_job():
 
 def update_launchd_job():
     collector_exists = COLLECTOR_PLIST_PATH.exists()
+    api_collector_exists = API_COLLECTOR_PLIST_PATH.exists()
     summary_exists = SUMMARY_PLIST_PATH.exists()
     
-    if not collector_exists and not summary_exists:
+    if not collector_exists and not api_collector_exists and not summary_exists:
         print("⚠️  No existing plists to update. Please run 'install' first.")
         return
 
     # Create plist objects
     collector_plist = _make_collector_plist_dict()
+    api_collector_plist = _make_api_collector_plist_dict()
     summary_plist = _make_summary_plist_dict()
     
     if collector_exists:
-        print(f"📋 Will overwrite Collector LaunchAgent plist at:\n    {COLLECTOR_PLIST_PATH}\n")
+        print(f"📋 Will overwrite Disk Collector LaunchAgent plist at:\n    {COLLECTOR_PLIST_PATH}\n")
         print("New Contents:")
         print(plistlib.dumps(collector_plist).decode())
+        
+    if api_collector_exists:
+        print(f"📋 Will overwrite API Collector LaunchAgent plist at:\n    {API_COLLECTOR_PLIST_PATH}\n")
+        print("New Contents:")
+        print(plistlib.dumps(api_collector_plist).decode())
         
     if summary_exists:
         print(f"📋 Will overwrite Summary LaunchAgent plist at:\n    {SUMMARY_PLIST_PATH}\n")
@@ -323,7 +408,15 @@ def update_launchd_job():
             # Unload and reload so launchd picks up changes
             subprocess.run(["launchctl", "unload", str(COLLECTOR_PLIST_PATH)])
             subprocess.run(["launchctl", "load", str(COLLECTOR_PLIST_PATH)])
-            print("✅ Collector LaunchAgent updated and reloaded.")
+            print("✅ Disk Collector LaunchAgent updated and reloaded.")
+            
+        if api_collector_exists:
+            with open(API_COLLECTOR_PLIST_PATH, "wb") as f:
+                plistlib.dump(api_collector_plist, f)
+            # Unload and reload so launchd picks up changes
+            subprocess.run(["launchctl", "unload", str(API_COLLECTOR_PLIST_PATH)])
+            subprocess.run(["launchctl", "load", str(API_COLLECTOR_PLIST_PATH)])
+            print("✅ API Collector LaunchAgent updated and reloaded.")
             
         if summary_exists:
             with open(SUMMARY_PLIST_PATH, "wb") as f:
@@ -338,14 +431,17 @@ def update_launchd_job():
 
 def remove_launchd_job():
     collector_exists = COLLECTOR_PLIST_PATH.exists()
+    api_collector_exists = API_COLLECTOR_PLIST_PATH.exists()
     summary_exists = SUMMARY_PLIST_PATH.exists()
     
-    if not collector_exists and not summary_exists:
+    if not collector_exists and not api_collector_exists and not summary_exists:
         print("⚠️  No existing plists to remove.")
         return
     
     if collector_exists:
-        print(f"📋 Found collector plist at {COLLECTOR_PLIST_PATH}.")
+        print(f"📋 Found disk collector plist at {COLLECTOR_PLIST_PATH}.")
+    if api_collector_exists:
+        print(f"📋 Found API collector plist at {API_COLLECTOR_PLIST_PATH}.")
     if summary_exists:
         print(f"📋 Found summary plist at {SUMMARY_PLIST_PATH}.")
     
@@ -355,7 +451,12 @@ def remove_launchd_job():
         if collector_exists:
             subprocess.run(["launchctl", "unload", str(COLLECTOR_PLIST_PATH)])
             COLLECTOR_PLIST_PATH.unlink()
-            print("✅ Collector LaunchAgent unloaded and plist removed.")
+            print("✅ Disk Collector LaunchAgent unloaded and plist removed.")
+            
+        if api_collector_exists:
+            subprocess.run(["launchctl", "unload", str(API_COLLECTOR_PLIST_PATH)])
+            API_COLLECTOR_PLIST_PATH.unlink()
+            print("✅ API Collector LaunchAgent unloaded and plist removed.")
             
         if summary_exists:
             subprocess.run(["launchctl", "unload", str(SUMMARY_PLIST_PATH)])

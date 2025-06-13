@@ -9,7 +9,7 @@ from common.env_utils import preprocess_env
 preprocess_env()
 
 # Use HOME directory for database path by default
-DB_FILE = os.getenv("DISK_STATS_DB", str(Path.home() / "hpc-disk-monitor/data/disk_stats.db"))
+DB_FILE = os.getenv("RESOURCE_STATS_DB", os.getenv("DISK_STATS_DB", str(Path.home() / "hpc-resource-monitor/data/resource_stats.db")))
 
 def connect_db(fail_gracefully=True):
     """Connect to the database and create directory structure if needed.
@@ -77,5 +77,30 @@ def create_tables(conn):
                 min REAL,
                 max REAL,
                 stddev REAL
+            )
+        ''')
+        c.execute('''
+            CREATE TABLE IF NOT EXISTS api_stats (
+                timestamp TEXT,
+                hostname TEXT,
+                api_name TEXT,
+                endpoint_url TEXT,
+                response_time_ms REAL,
+                status_code INTEGER,
+                success BOOLEAN,
+                error_message TEXT
+            )
+        ''')
+        c.execute('''
+            CREATE TABLE IF NOT EXISTS api_stats_summary (
+                timestamp TEXT,
+                hostname TEXT,
+                api_name TEXT,
+                metric TEXT,
+                avg REAL,
+                min REAL,
+                max REAL,
+                stddev REAL,
+                success_rate REAL
             )
         ''')

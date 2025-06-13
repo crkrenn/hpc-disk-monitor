@@ -11,9 +11,9 @@ import sys
 sys.path.append(str(Path(__file__).resolve().parent.parent.parent))
 
 from db.schema import connect_db, create_tables, DB_FILE
-from scripts.disk_metrics_collector import compute_and_store_summary, decimate_old_data, test_io_speed
+from scripts.resource_metrics_collector import compute_and_store_summary, decimate_old_data, test_io_speed
 
-class TestDiskMetricsSimplified(unittest.TestCase):
+class TestResourceMetricsSimplified(unittest.TestCase):
     
     def setUp(self):
         # Create temporary directories for testing
@@ -26,7 +26,7 @@ class TestDiskMetricsSimplified(unittest.TestCase):
         self.db_path = os.path.join(self.temp_dir, "test_disk_stats.db")
         
         # Override the DB_FILE and set a test hostname
-        import scripts.disk_metrics_collector as collector
+        import scripts.resource_metrics_collector as collector
         collector.DB_FILE = self.db_path
         self.original_hostname = collector.HOSTNAME
         collector.HOSTNAME = "test-host"
@@ -43,7 +43,7 @@ class TestDiskMetricsSimplified(unittest.TestCase):
         shutil.rmtree(self.temp_dir)
         
         # Restore original DB_FILE and hostname
-        import scripts.disk_metrics_collector as collector
+        import scripts.resource_metrics_collector as collector
         collector.DB_FILE = self.original_db_file
         collector.HOSTNAME = self.original_hostname
     

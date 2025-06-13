@@ -1,6 +1,6 @@
-# HPC Disk Monitor Tests
+# HPC Resource Monitor Tests
 
-This directory contains tests for the HPC Disk Monitor project.
+This directory contains tests for the HPC Resource Monitor project.
 
 ## Test Structure
 
@@ -23,6 +23,12 @@ python -m unittest discover -s tests/integration
 
 # Run a specific test file
 python -m tests.unit.test_env_utils
+
+# Run API status collector tests
+python -m tests.unit.test_api_status_collector
+
+# Run resource metrics collector tests  
+python -m tests.unit.test_resource_metrics_collector
 ```
 
 ### Using pytest
@@ -36,6 +42,12 @@ pytest tests/unit/
 
 # Run specific test file
 pytest tests/unit/test_env_utils.py
+
+# Run API-related tests
+pytest tests/unit/test_api_status_collector.py tests/integration/test_api_integration.py
+
+# Run disk metrics tests
+pytest tests/unit/test_resource_metrics_collector.py tests/integration/test_resource_metrics_integration.py
 ```
 
 ## Writing New Tests
