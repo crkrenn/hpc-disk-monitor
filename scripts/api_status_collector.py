@@ -213,7 +213,7 @@ def compute_and_store_api_summary(api_name):
         with conn:
             cursor = conn.cursor()
             cursor.execute("""
-                SELECT response_time_ms, success
+                SELECT response_time_ms, success, status_code
                 FROM api_stats
                 WHERE api_name = ? AND hostname = ? AND timestamp >= ?
             """, (api_name, HOSTNAME, ts_threshold))
@@ -226,6 +226,7 @@ def compute_and_store_api_summary(api_name):
         
         response_times = [row[0] for row in rows]
         successes = [row[1] for row in rows]
+        status_codes = [row[2] for row in rows]
         
         success_rate = sum(successes) / len(successes) if successes else 0.0
         
@@ -235,6 +236,13 @@ def compute_and_store_api_summary(api_name):
                 "max": max(response_times),
                 "avg": sum(response_times) / len(response_times),
                 "stddev": statistics.stdev(response_times) if len(response_times) > 1 else 0,
+                "success_rate": success_rate
+            },
+            "status_code": {
+                "min": min(status_codes),
+                "max": max(status_codes),
+                "avg": sum(status_codes) / len(status_codes),
+                "stddev": statistics.stdev(status_codes) if len(status_codes) > 1 else 0,
                 "success_rate": success_rate
             }
         }

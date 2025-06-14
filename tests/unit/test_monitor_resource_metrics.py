@@ -20,7 +20,7 @@ with patch('argparse.ArgumentParser.parse_args') as mock_args:
 class TestMonitorResourceMetrics(unittest.TestCase):
     
     @patch('scripts.monitor_resource_metrics.connect_db')
-    def test_fetch_summary_data_with_data(self, mock_connect_db):
+    def test_fetch_disk_summary_data_with_data(self, mock_connect_db):
         # Create mock connection and cursor
         mock_conn = MagicMock()
         mock_cursor = MagicMock()
@@ -44,7 +44,7 @@ class TestMonitorResourceMetrics(unittest.TestCase):
             mock_read_sql.return_value = mock_df
             
             # Call the function
-            result = monitor_resource_metrics.fetch_summary_data()
+            result = monitor_resource_metrics.fetch_disk_summary_data()
             
             # Check results
             self.assertIsInstance(result, pd.DataFrame)
@@ -55,7 +55,7 @@ class TestMonitorResourceMetrics(unittest.TestCase):
             self.assertEqual(result['timestamp'].dtype, 'datetime64[ns]')
     
     @patch('scripts.monitor_resource_metrics.connect_db')
-    def test_fetch_summary_data_empty_table(self, mock_connect_db):
+    def test_fetch_disk_summary_data_empty_table(self, mock_connect_db):
         # Create mock connection and cursor
         mock_conn = MagicMock()
         mock_cursor = MagicMock()
@@ -67,7 +67,7 @@ class TestMonitorResourceMetrics(unittest.TestCase):
         mock_cursor.fetchone.side_effect = [(True,), (0,)]  # Table exists, but has 0 rows
         
         # Call the function with empty table
-        result = monitor_resource_metrics.fetch_summary_data()
+        result = monitor_resource_metrics.fetch_disk_summary_data()
         
         # Check result is empty dataframe with expected columns
         self.assertIsInstance(result, pd.DataFrame)
@@ -76,7 +76,7 @@ class TestMonitorResourceMetrics(unittest.TestCase):
                          ["timestamp", "hostname", "label", "metric", "avg", "min", "max", "stddev"])
     
     @patch('scripts.monitor_resource_metrics.connect_db')
-    def test_fetch_summary_data_missing_table(self, mock_connect_db):
+    def test_fetch_disk_summary_data_missing_table(self, mock_connect_db):
         # Create mock connection and cursor
         mock_conn = MagicMock()
         mock_cursor = MagicMock()
@@ -88,13 +88,13 @@ class TestMonitorResourceMetrics(unittest.TestCase):
         mock_cursor.fetchone.return_value = None  # Table doesn't exist
         
         # Call the function with missing table
-        result = monitor_resource_metrics.fetch_summary_data()
+        result = monitor_resource_metrics.fetch_disk_summary_data()
         
         # Check result is empty dataframe with expected columns
         self.assertIsInstance(result, pd.DataFrame)
         self.assertTrue(result.empty)
     
-    def test_build_graph_with_data(self):
+    def test_build_disk_graph_with_data(self):
         # Create test data
         data = {
             'timestamp': pd.date_range(start='2023-01-01', periods=10),
@@ -109,9 +109,9 @@ class TestMonitorResourceMetrics(unittest.TestCase):
         df = pd.DataFrame(data)
         
         # Call the function with different options
-        fig_basic = monitor_resource_metrics.build_graph(df, 'write_mbps', False, False, False)
-        fig_with_min_max = monitor_resource_metrics.build_graph(df, 'write_mbps', True, True, False)
-        fig_with_std = monitor_resource_metrics.build_graph(df, 'write_mbps', False, False, True)
+        fig_basic = monitor_resource_metrics.build_disk_graph(df, 'write_mbps', False, False, False)
+        fig_with_min_max = monitor_resource_metrics.build_disk_graph(df, 'write_mbps', True, True, False)
+        fig_with_std = monitor_resource_metrics.build_disk_graph(df, 'write_mbps', False, False, True)
         
         # Check basic figure properties
         self.assertEqual(fig_basic.layout.title.text, "Write Mbps Over Time")
@@ -127,7 +127,7 @@ class TestMonitorResourceMetrics(unittest.TestCase):
         # With stddev should have 3 traces
         self.assertEqual(len(fig_with_std.data), 3)
     
-    def test_build_graph_with_empty_data(self):
+    def test_build_disk_graph_with_empty_data(self):
         # Create empty dataframe
         df = pd.DataFrame(columns=[
             "timestamp", "hostname", "label", "metric", 
@@ -135,7 +135,7 @@ class TestMonitorResourceMetrics(unittest.TestCase):
         ])
         
         # Call the function
-        fig = monitor_resource_metrics.build_graph(df, 'write_mbps', True, True, True)
+        fig = monitor_resource_metrics.build_disk_graph(df, 'write_mbps', True, True, True)
         
         # Check that we get a figure with an annotation explaining no data
         self.assertTrue(fig.layout.annotations)
@@ -144,15 +144,15 @@ class TestMonitorResourceMetrics(unittest.TestCase):
         # Check title
         self.assertEqual(fig.layout.title.text, "No data available for Write Mbps")
     
-    def test_generate_graph_with_error(self):
-        """Test that generate_graph handles errors gracefully."""
+    def test_generate_disk_graph_with_error(self):
+        """Test that generate_disk_graph handles errors gracefully."""
         # Create empty dataframe
         df = pd.DataFrame(columns=["timestamp", "hostname", "label", "metric", "avg", "min", "max", "stddev"])
         
-        # Mock the build_graph function to raise an exception
-        with patch('scripts.monitor_resource_metrics.build_graph', side_effect=Exception("Test error")):
-            # Call generate_graph
-            fig = monitor_resource_metrics.generate_graph(df, "write_mbps", True, False, 
+        # Mock the build_disk_graph function to raise an exception
+        with patch('scripts.monitor_resource_metrics.build_disk_graph', side_effect=Exception("Test error")):
+            # Call generate_disk_graph
+            fig = monitor_resource_metrics.generate_disk_graph(df, "write_mbps", True, False, 
                                                     {"write_mbps": {"title": "Test", "height": 300}})
             
             # Should return an error figure, not raise an exception
@@ -163,48 +163,55 @@ class TestMonitorResourceMetrics(unittest.TestCase):
     def test_callback_with_invalid_inputs(self):
         """Test the callback handles invalid inputs gracefully."""
         # Test with None values
-        with patch('scripts.monitor_resource_metrics.fetch_summary_data') as mock_fetch:
-            mock_fetch.return_value = pd.DataFrame()  # Return empty dataframe
+        with patch('scripts.monitor_resource_metrics.fetch_disk_summary_data') as mock_fetch_disk, \
+             patch('scripts.monitor_resource_metrics.fetch_api_summary_data') as mock_fetch_api:
+            mock_fetch_disk.return_value = pd.DataFrame()  # Return empty dataframe
+            mock_fetch_api.return_value = pd.DataFrame()  # Return empty dataframe
             
             # Call with invalid time range
             result = monitor_resource_metrics.update_all_graphs("invalid_range", None, 1)
             
-            # Should return 7 items (6 figures + 1 text element)
-            self.assertEqual(len(result), 7)
+            # Should return 9 items (8 figures + 1 text element)
+            self.assertEqual(len(result), 9)
             
             # All elements should be valid (not crash)
-            for i in range(6):
+            for i in range(8):
                 self.assertIsNotNone(result[i])  # Check each figure
             
             # Check last updated text 
-            self.assertIn("Last updated", result[6])
-            self.assertIn("Showing: Last Week", result[6])  # Should fall back to default
+            self.assertIn("Last updated", result[8])
+            self.assertIn("Showing: Last Week", result[8])  # Should fall back to default
         
         # Test with empty detail_opts
-        with patch('scripts.monitor_resource_metrics.fetch_summary_data') as mock_fetch:
-            mock_fetch.return_value = pd.DataFrame()  # Return empty dataframe
+        with patch('scripts.monitor_resource_metrics.fetch_disk_summary_data') as mock_fetch_disk, \
+             patch('scripts.monitor_resource_metrics.fetch_api_summary_data') as mock_fetch_api:
+            mock_fetch_disk.return_value = pd.DataFrame()  # Return empty dataframe
+            mock_fetch_api.return_value = pd.DataFrame()  # Return empty dataframe
             
             # Call with empty detail options
             result = monitor_resource_metrics.update_all_graphs("1d", [], 1)
             
             # Should still work without errors
-            self.assertEqual(len(result), 7)
+            self.assertEqual(len(result), 9)
             
         # Test with severe exception that triggers the catch-all handler
-        with patch('scripts.monitor_resource_metrics.fetch_summary_data') as mock_fetch:
+        with patch('scripts.monitor_resource_metrics.fetch_disk_summary_data') as mock_fetch_disk, \
+             patch('scripts.monitor_resource_metrics.fetch_api_summary_data') as mock_fetch_api:
             # Make it raise an exception when accessed
-            mock_fetch.side_effect = Exception("Critical test error")
+            mock_fetch_disk.side_effect = Exception("Critical test error")
+            mock_fetch_api.side_effect = Exception("Critical test error")
             
-            # Also patch the generate_graph to ensure it also raises an error
+            # Also patch the generate_disk_graph to ensure it also raises an error
             # This simulates a more severe error condition that should trigger the outer exception handler
-            with patch('scripts.monitor_resource_metrics.generate_graph', side_effect=Exception("Critical graph error")):
+            with patch('scripts.monitor_resource_metrics.generate_disk_graph', side_effect=Exception("Critical graph error")), \
+                 patch('scripts.monitor_resource_metrics.generate_api_graph', side_effect=Exception("Critical graph error")):
                 # The callback should handle this gracefully
                 result = monitor_resource_metrics.update_all_graphs("1d", ["minmax"], 1)
                 
                 # Should return error figures
-                self.assertEqual(len(result), 7)
+                self.assertEqual(len(result), 9)
                 # The last item should be the error message
-                self.assertIn("Error", result[6])
+                self.assertIn("Error", result[8])
 
 
 if __name__ == '__main__':

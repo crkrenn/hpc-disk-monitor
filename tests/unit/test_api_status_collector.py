@@ -271,10 +271,11 @@ class TestApiStatusCollector(unittest.TestCase):
         mock_conn.cursor.return_value = mock_cursor
         
         # Mock query results - 3 rows: 2 successful, 1 failed
+        # Format: (response_time_ms, success, status_code)
         mock_cursor.fetchall.return_value = [
-            (100.0, True),
-            (150.0, True),
-            (500.0, False)
+            (100.0, True, 200),
+            (150.0, True, 200),
+            (500.0, False, 500)
         ]
         
         # Test with non-verbose mode
@@ -295,12 +296,19 @@ class TestApiStatusCollector(unittest.TestCase):
             
             self.assertEqual(call_api_name, api_name)
             self.assertIn("response_time_ms", call_summary)
+            self.assertIn("status_code", call_summary)
             
             # Check response_time_ms stats
             self.assertEqual(call_summary["response_time_ms"]["min"], 100.0)
             self.assertEqual(call_summary["response_time_ms"]["max"], 500.0)
             self.assertEqual(call_summary["response_time_ms"]["avg"], 250.0)  # (100+150+500)/3
             self.assertAlmostEqual(call_summary["response_time_ms"]["success_rate"], 2/3)  # 2 successes out of 3
+            
+            # Check status_code stats
+            self.assertEqual(call_summary["status_code"]["min"], 200)
+            self.assertEqual(call_summary["status_code"]["max"], 500)
+            self.assertEqual(call_summary["status_code"]["avg"], (200+200+500)/3)  # (200+200+500)/3
+            self.assertAlmostEqual(call_summary["status_code"]["success_rate"], 2/3)  # 2 successes out of 3
         
         # Test verbose mode
         mock_connect_db.reset_mock()

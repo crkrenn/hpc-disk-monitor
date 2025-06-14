@@ -26,7 +26,7 @@ TIME_PERIODS = {
 }
 
 # Parse command line arguments
-parser = argparse.ArgumentParser(description='Display disk metrics summary')
+parser = argparse.ArgumentParser(description='Display resource metrics summary (disk and API)')
 parser.add_argument('--time-period', '-t', choices=TIME_PERIODS.keys(), default="1d",
                     help='Time period for statistics (default: 1d)')
 parser.add_argument('--recompute', '-r', action='store_true',
@@ -41,10 +41,23 @@ args = parser.parse_args()
 
 # Load .env and expand {{HOME}}/{{whoami}} if needed
 preprocess_env(use_shell_env=True)
-DB_FILE = os.getenv("DISK_STATS_DB", str(Path.home() / "hpc-disk-monitor/data/disk_stats.db"))
+DB_FILE = os.getenv("RESOURCE_STATS_DB", os.getenv("DISK_STATS_DB", str(Path.home() / "hpc-resource-monitor/data/resource_stats.db")))
 
 # Get filesystem configuration from environment
 FS_LABELS = os.getenv("FILESYSTEM_LABELS", "tmpfs").split(",")
+
+# Get API configuration from environment
+API_ENDPOINTS = os.getenv("API_ENDPOINTS", "").split(",") if os.getenv("API_ENDPOINTS") else []
+API_NAMES = os.getenv("API_NAMES", "").split(",") if os.getenv("API_NAMES") else []
+
+# Create API_CONFIG mapping
+API_CONFIG = {}
+if API_ENDPOINTS:
+    if API_NAMES and len(API_NAMES) == len(API_ENDPOINTS):
+        API_CONFIG = dict(zip(API_ENDPOINTS, API_NAMES))
+    else:
+        # Auto-generate names
+        API_CONFIG = {endpoint: f"API-{i+1}" for i, endpoint in enumerate(API_ENDPOINTS)}
 
 def connect_db():
     """Connect to the database with error handling.
@@ -79,11 +92,33 @@ def get_time_bounds_and_count(conn, start_time=None, end_time=None):
         # Get time filter if specified
         time_filter, time_params = get_time_filter_params(start_time, end_time)
         
-        # Execute query with optional time filter
-        query = f"SELECT MIN(timestamp), MAX(timestamp), COUNT(*) FROM disk_stats WHERE 1=1 {time_filter}"
-        c.execute(query, time_params)
-        
-        return c.fetchone()
+        # Get stats from both disk_stats and api_stats tables
+        try:
+            # Check disk_stats table
+            disk_query = f"SELECT MIN(timestamp), MAX(timestamp), COUNT(*) FROM disk_stats WHERE 1=1 {time_filter}"
+            c.execute(disk_query, time_params)
+            disk_result = c.fetchone() or (None, None, 0)
+            
+            # Check api_stats table (may not exist)
+            try:
+                api_query = f"SELECT MIN(timestamp), MAX(timestamp), COUNT(*) FROM api_stats WHERE 1=1 {time_filter}"
+                c.execute(api_query, time_params)
+                api_result = c.fetchone() or (None, None, 0)
+            except sqlite3.OperationalError:
+                # api_stats table doesn't exist
+                api_result = (None, None, 0)
+            
+            # Combine results - use earliest first timestamp, latest last timestamp, sum counts
+            first_ts = min(filter(None, [disk_result[0], api_result[0]])) if any([disk_result[0], api_result[0]]) else None
+            last_ts = max(filter(None, [disk_result[1], api_result[1]])) if any([disk_result[1], api_result[1]]) else None
+            total_count = (disk_result[2] or 0) + (api_result[2] or 0)
+            
+            return (first_ts, last_ts, total_count)
+        except sqlite3.Error:
+            # Fallback to just disk_stats if there are issues
+            query = f"SELECT MIN(timestamp), MAX(timestamp), COUNT(*) FROM disk_stats WHERE 1=1 {time_filter}"
+            c.execute(query, time_params)
+            return c.fetchone()
     except sqlite3.Error as e:
         print(f"⚠️  Error retrieving time bounds: {e}")
         return None, None, 0
@@ -263,85 +298,184 @@ def get_latest_summary_per_filesystem(conn, start_time=None, end_time=None):
         # Add time filter if specified
         time_filter, time_params = get_time_filter_params(start_time, end_time)
         
-        # Query for the latest summary records within time period
-        if start_time or end_time:
-            # Use the provided time range and get the latest record per label/metric in that range
-            query = f"""
-                WITH filtered_summaries AS (
-                    SELECT 
-                        label, 
-                        metric, 
-                        MAX(timestamp) as latest_timestamp
-                    FROM disk_stats_summary
-                    WHERE 1=1 {time_filter} {label_filter}
-                    GROUP BY label, metric
-                ),
-                -- Add row numbers to pick just one record per label/metric combination
-                numbered_results AS (
+        # Get both disk and API summary data
+        all_summaries = []
+        
+        # Get disk summary data
+        try:
+            if start_time or end_time:
+                # Use the provided time range and get the latest record per label/metric in that range
+                disk_query = f"""
+                    WITH filtered_summaries AS (
+                        SELECT 
+                            label, 
+                            metric, 
+                            MAX(timestamp) as latest_timestamp
+                        FROM disk_stats_summary
+                        WHERE 1=1 {time_filter} {label_filter}
+                        GROUP BY label, metric
+                    ),
+                    -- Add row numbers to pick just one record per label/metric combination
+                    numbered_results AS (
+                        SELECT
+                            dss.label,
+                            dss.metric,
+                            dss.avg,
+                            dss.min,
+                            dss.max,
+                            dss.stddev,
+                            dss.timestamp,
+                            dss.hostname,
+                            'disk' as data_type,
+                            ROW_NUMBER() OVER (PARTITION BY dss.label, dss.metric ORDER BY dss.rowid DESC) as row_num
+                        FROM disk_stats_summary dss
+                        JOIN filtered_summaries f ON 
+                            dss.label = f.label AND 
+                            dss.metric = f.metric AND 
+                            dss.timestamp = f.latest_timestamp
+                    )
                     SELECT
-                        dss.label,
-                        dss.metric,
-                        dss.avg,
-                        dss.min,
-                        dss.max,
-                        dss.stddev,
-                        dss.timestamp,
-                        dss.hostname,
-                        ROW_NUMBER() OVER (PARTITION BY dss.label, dss.metric ORDER BY dss.rowid DESC) as row_num
-                    FROM disk_stats_summary dss
-                    JOIN filtered_summaries f ON 
-                        dss.label = f.label AND 
-                        dss.metric = f.metric AND 
-                        dss.timestamp = f.latest_timestamp
-                )
-                SELECT
-                    label,
-                    metric,
-                    avg,
-                    min,
-                    max,
-                    stddev,
-                    timestamp,
-                    hostname
-                FROM numbered_results
-                WHERE row_num = 1
-                ORDER BY label, metric
-            """
-            params = time_params + label_params
-        else:
-            # Default behavior - just get the most recent record for each label/metric
-            query = f"""
-                WITH latest_fs_timestamps AS (
-                    SELECT label, MAX(timestamp) as latest_timestamp
-                    FROM disk_stats_summary
-                    WHERE 1=1 {label_filter}
-                    GROUP BY label
-                ),
-                -- Pick one record per filesystem+metric from the latest timestamp
-                latest_metrics AS (
-                    SELECT 
-                        dss.label, 
-                        dss.metric, 
-                        dss.avg, 
-                        dss.min, 
-                        dss.max, 
-                        dss.stddev, 
-                        dss.timestamp,
-                        dss.hostname,
-                        ROW_NUMBER() OVER (
-                            PARTITION BY dss.label, dss.metric 
-                            ORDER BY dss.timestamp DESC, dss.rowid DESC
-                        ) as row_num
-                    FROM disk_stats_summary dss
-                    JOIN latest_fs_timestamps l ON dss.label = l.label AND dss.timestamp = l.latest_timestamp
-                )
-                -- Only return one record per filesystem+metric
-                SELECT label, metric, avg, min, max, stddev, timestamp, hostname
-                FROM latest_metrics
-                WHERE row_num = 1
-                ORDER BY label, metric
-            """
-            params = label_params
+                        label,
+                        metric,
+                        avg,
+                        min,
+                        max,
+                        stddev,
+                        timestamp,
+                        hostname,
+                        data_type
+                    FROM numbered_results
+                    WHERE row_num = 1
+                    ORDER BY label, metric
+                """
+                disk_params = time_params + label_params
+            else:
+                # Default behavior - just get the most recent record for each label/metric
+                disk_query = f"""
+                    WITH latest_fs_timestamps AS (
+                        SELECT label, MAX(timestamp) as latest_timestamp
+                        FROM disk_stats_summary
+                        WHERE 1=1 {label_filter}
+                        GROUP BY label
+                    ),
+                    -- Pick one record per filesystem+metric from the latest timestamp
+                    latest_metrics AS (
+                        SELECT 
+                            dss.label, 
+                            dss.metric, 
+                            dss.avg, 
+                            dss.min, 
+                            dss.max, 
+                            dss.stddev, 
+                            dss.timestamp,
+                            dss.hostname,
+                            'disk' as data_type,
+                            ROW_NUMBER() OVER (
+                                PARTITION BY dss.label, dss.metric 
+                                ORDER BY dss.timestamp DESC, dss.rowid DESC
+                            ) as row_num
+                        FROM disk_stats_summary dss
+                        JOIN latest_fs_timestamps l ON dss.label = l.label AND dss.timestamp = l.latest_timestamp
+                    )
+                    -- Only return one record per filesystem+metric
+                    SELECT label, metric, avg, min, max, stddev, timestamp, hostname, data_type
+                    FROM latest_metrics
+                    WHERE row_num = 1
+                    ORDER BY label, metric
+                """
+                disk_params = label_params
+            
+            c.execute(disk_query, disk_params)
+            all_summaries.extend(c.fetchall())
+        except sqlite3.Error:
+            # disk_stats_summary table doesn't exist or other error
+            pass
+        
+        # Get API summary data
+        try:
+            if start_time or end_time:
+                api_query = f"""
+                    WITH filtered_api_summaries AS (
+                        SELECT 
+                            api_name, 
+                            metric, 
+                            MAX(timestamp) as latest_timestamp
+                        FROM api_stats_summary
+                        WHERE 1=1 {time_filter}
+                        GROUP BY api_name, metric
+                    ),
+                    numbered_api_results AS (
+                        SELECT
+                            ass.api_name as label,
+                            ass.metric,
+                            ass.avg,
+                            ass.min,
+                            ass.max,
+                            ass.stddev,
+                            ass.timestamp,
+                            ass.hostname,
+                            'api' as data_type,
+                            ROW_NUMBER() OVER (PARTITION BY ass.api_name, ass.metric ORDER BY ass.rowid DESC) as row_num
+                        FROM api_stats_summary ass
+                        JOIN filtered_api_summaries f ON 
+                            ass.api_name = f.api_name AND 
+                            ass.metric = f.metric AND 
+                            ass.timestamp = f.latest_timestamp
+                    )
+                    SELECT
+                        label,
+                        metric,
+                        avg,
+                        min,
+                        max,
+                        stddev,
+                        timestamp,
+                        hostname,
+                        data_type
+                    FROM numbered_api_results
+                    WHERE row_num = 1
+                    ORDER BY label, metric
+                """
+                api_params = time_params
+            else:
+                api_query = f"""
+                    WITH latest_api_timestamps AS (
+                        SELECT api_name, MAX(timestamp) as latest_timestamp
+                        FROM api_stats_summary
+                        GROUP BY api_name
+                    ),
+                    latest_api_metrics AS (
+                        SELECT 
+                            ass.api_name as label, 
+                            ass.metric, 
+                            ass.avg, 
+                            ass.min, 
+                            ass.max, 
+                            ass.stddev, 
+                            ass.timestamp,
+                            ass.hostname,
+                            'api' as data_type,
+                            ROW_NUMBER() OVER (
+                                PARTITION BY ass.api_name, ass.metric 
+                                ORDER BY ass.timestamp DESC, ass.rowid DESC
+                            ) as row_num
+                        FROM api_stats_summary ass
+                        JOIN latest_api_timestamps l ON ass.api_name = l.api_name AND ass.timestamp = l.latest_timestamp
+                    )
+                    SELECT label, metric, avg, min, max, stddev, timestamp, hostname, data_type
+                    FROM latest_api_metrics
+                    WHERE row_num = 1
+                    ORDER BY label, metric
+                """
+                api_params = []
+            
+            c.execute(api_query, api_params)
+            all_summaries.extend(c.fetchall())
+        except sqlite3.Error:
+            # api_stats_summary table doesn't exist or other error
+            pass
+        
+        return all_summaries
         
         c.execute(query, params)
         return c.fetchall()
@@ -350,8 +484,8 @@ def get_latest_summary_per_filesystem(conn, start_time=None, end_time=None):
         print(f"⚠️  Error retrieving summary data: {e}")
         return []
 
-def get_all_filesystems(conn, start_time=None, end_time=None):
-    """Get all filesystems with data, optionally filtered by time period
+def get_all_resources(conn, start_time=None, end_time=None):
+    """Get all resources (filesystems and APIs) with data, optionally filtered by time period
     
     Args:
         conn (Connection): SQLite connection
@@ -359,30 +493,46 @@ def get_all_filesystems(conn, start_time=None, end_time=None):
         end_time (str): ISO format datetime string for end of period
         
     Returns:
-        list: Filesystem labels
+        dict: {'disk': [filesystem_labels], 'api': [api_names]}
     """
     if conn is None:
-        return []
+        return {'disk': [], 'api': []}
         
+    resources = {'disk': [], 'api': []}
+    
     try:
         c = conn.cursor()
         
         # Get time filter if specified
         time_filter, time_params = get_time_filter_params(start_time, end_time)
         
-        # If filesystem labels are configured, only return those that exist in the database
-        if FS_LABELS:
-            placeholders = ', '.join(['?'] * len(FS_LABELS))
-            query = f"SELECT DISTINCT label FROM disk_stats WHERE label IN ({placeholders}) {time_filter} ORDER BY label"
-            c.execute(query, FS_LABELS + time_params)
-        else:
-            query = f"SELECT DISTINCT label FROM disk_stats WHERE 1=1 {time_filter} ORDER BY label"
-            c.execute(query, time_params)
+        # Get filesystem data
+        try:
+            if FS_LABELS:
+                placeholders = ', '.join(['?'] * len(FS_LABELS))
+                query = f"SELECT DISTINCT label FROM disk_stats WHERE label IN ({placeholders}) {time_filter} ORDER BY label"
+                c.execute(query, FS_LABELS + time_params)
+            else:
+                query = f"SELECT DISTINCT label FROM disk_stats WHERE 1=1 {time_filter} ORDER BY label"
+                c.execute(query, time_params)
+            resources['disk'] = [row[0] for row in c.fetchall()]
+        except sqlite3.Error:
+            # disk_stats table doesn't exist
+            pass
             
-        return [row[0] for row in c.fetchall()]
+        # Get API data
+        try:
+            query = f"SELECT DISTINCT api_name FROM api_stats WHERE 1=1 {time_filter} ORDER BY api_name"
+            c.execute(query, time_params)
+            resources['api'] = [row[0] for row in c.fetchall()]
+        except sqlite3.Error:
+            # api_stats table doesn't exist
+            pass
+            
+        return resources
     except sqlite3.Error as e:
-        print(f"⚠️  Error retrieving filesystems: {e}")
-        return []
+        print(f"⚠️  Error retrieving resources: {e}")
+        return {'disk': [], 'api': []}
 
 def sci(x):
     return f"{x:.2e}"
@@ -493,23 +643,40 @@ def main():
                     print("⚠️  Failed to recompute summary statistics.")
                     return 1
             
-            # Get all filesystems configured in .env that have data for the time period
+            # Get all resources (filesystems and APIs) configured in .env that have data for the time period
             configured_filesystems = FS_LABELS
-            filesystems = get_all_filesystems(conn, start_time, end_time)
+            configured_apis = list(API_CONFIG.values()) if API_CONFIG else []
+            resources = get_all_resources(conn, start_time, end_time)
             
-            if not filesystems:
-                print(f"⚠️  No filesystem data found for {time_desc}.")
-            else:
-                # Find which configured filesystems have data
-                found_fs = [fs for fs in configured_filesystems if fs in filesystems]
-                not_found_fs = [fs for fs in configured_filesystems if fs not in filesystems]
+            # Report on disk resources
+            if resources['disk']:
+                found_fs = [fs for fs in configured_filesystems if fs in resources['disk']]
+                not_found_fs = [fs for fs in configured_filesystems if fs not in resources['disk']]
                 
-                print(f"Found data for {len(found_fs)} of {len(configured_filesystems)} configured filesystems: {', '.join(found_fs)}")
+                print(f"Found disk data for {len(found_fs)} of {len(configured_filesystems)} configured filesystems: {', '.join(found_fs)}")
                 
                 if not_found_fs:
-                    print(f"⚠️  No data found for these configured filesystems during {time_desc}: {', '.join(not_found_fs)}")
+                    print(f"⚠️  No disk data found for these configured filesystems during {time_desc}: {', '.join(not_found_fs)}")
+            else:
+                print(f"⚠️  No filesystem data found for {time_desc}.")
+            
+            # Report on API resources
+            if resources['api']:
+                if configured_apis:
+                    found_apis = [api for api in configured_apis if api in resources['api']]
+                    not_found_apis = [api for api in configured_apis if api not in resources['api']]
+                    
+                    print(f"Found API data for {len(found_apis)} of {len(configured_apis)} configured APIs: {', '.join(found_apis)}")
+                    
+                    if not_found_apis:
+                        print(f"⚠️  No API data found for these configured APIs during {time_desc}: {', '.join(not_found_apis)}")
+                else:
+                    print(f"Found API data for {len(resources['api'])} APIs: {', '.join(resources['api'])}")
+            else:
+                if configured_apis:
+                    print(f"⚠️  No API data found for {time_desc}.")
                 
-                print()
+            print()
                 
             # Print time period information
             print(f"📊 Showing statistics for: {time_desc}")
@@ -524,32 +691,58 @@ def main():
                 print(f"⚠️  Error retrieving summary data: {e}")
                 return 1
         
-            # Group data by filesystem for better presentation
-            summary_by_fs = {}
+            # Group data by resource type and label for better presentation
+            summary_by_resource = {}
             for row in summary:
-                label, metric, avg, minv, maxv, std, timestamp, hostname = row
-                if label not in summary_by_fs:
-                    summary_by_fs[label] = {
+                label, metric, avg, minv, maxv, std, timestamp, hostname, data_type = row
+                
+                # Create resource key (disk:filesystem or api:api_name)
+                resource_key = f"{data_type}:{label}"
+                
+                if resource_key not in summary_by_resource:
+                    summary_by_resource[resource_key] = {
                         'data': [],
-                        'timestamp': timestamp,  # Use the timestamp from the first metric for this filesystem
-                        'hostname': hostname
+                        'timestamp': timestamp,
+                        'hostname': hostname,
+                        'data_type': data_type,
+                        'label': label
                     }
-                summary_by_fs[label]['data'].append([metric, avg, minv, maxv, std])
+                summary_by_resource[resource_key]['data'].append([metric, avg, minv, maxv, std])
         
-            # Display summary for each filesystem
-            for label, fs_info in summary_by_fs.items():
-                print(f"\n=== {label.upper()} ===")
-                print(f"Last updated: {fs_info['timestamp']} on {fs_info['hostname']}")
+            # Display summary for each resource (disk filesystems and APIs)
+            for resource_key, resource_info in summary_by_resource.items():
+                data_type, label = resource_key.split(':', 1)
+                
+                if data_type == 'disk':
+                    print(f"\n=== DISK: {label.upper()} ===")
+                elif data_type == 'api':
+                    print(f"\n=== API: {label.upper()} ===")
+                    
+                print(f"Last updated: {resource_info['timestamp']} on {resource_info['hostname']}")
                 
                 table = []
-                for metric, avg, minv, maxv, std in fs_info['data']:
-                    # Format values based on metric type
+                for metric, avg, minv, maxv, std in resource_info['data']:
+                    # Format values based on metric type and data type
+                    if data_type == 'api':
+                        # API metrics have different formatting needs
+                        if 'response_time' in metric:
+                            formatted_values = [f"{avg:.2f}", f"{minv:.2f}", f"{maxv:.2f}", f"{std:.2f}"]
+                        elif 'success_rate' in metric:
+                            formatted_values = [f"{avg:.1%}", f"{minv:.1%}", f"{maxv:.1%}", f"{std:.3f}"]
+                        else:
+                            formatted_values = [format_value(avg, metric), format_value(minv, metric), 
+                                              format_value(maxv, metric), format_value(std, metric)]
+                    else:
+                        # Disk metrics use existing formatting
+                        formatted_values = [format_value(avg, metric), format_value(minv, metric), 
+                                          format_value(maxv, metric), format_value(std, metric)]
+                    
                     table.append([
                         metric.replace('_', ' ').title(),
-                        format_value(avg, metric),
-                        format_value(minv, metric),
-                        format_value(maxv, metric),
-                        format_value(std, metric)
+                        formatted_values[0],
+                        formatted_values[1], 
+                        formatted_values[2],
+                        formatted_values[3]
                     ])
                 
                 print(tabulate(table, headers=["Metric", "Avg", "Min", "Max", "Stddev"], tablefmt="grid"))
